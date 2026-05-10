@@ -9,6 +9,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { createHtmlArtifactManifest, inferLegacyManifest } from '../artifacts/manifest';
+import { validateHtmlArtifact } from '../artifacts/validate';
 import { createArtifactParser } from '../artifacts/parser';
 import { useT } from '../i18n';
 import { streamMessage } from '../providers/anthropic';
@@ -1360,6 +1361,18 @@ export function ProjectView({
         .replace(/^-+|-+$/g, '')
         .slice(0, 60) || 'artifact';
       const ext = artifactExtensionFor(art);
+      // Pre-write structural gate for HTML artifacts (#50, #1143). Reject
+      // bodies that obviously aren't a complete document — usually a one-line
+      // prose summary the model emitted inside `<artifact type="text/html">`
+      // when only Edit-tool changes happened this turn. Without this guard,
+      // such content lands as a phantom HTML file in the project panel.
+      if (ext === '.html') {
+        const validation = validateHtmlArtifact(art.html);
+        if (!validation.ok) {
+          setError(`Refused to save artifact "${art.identifier || art.title || 'untitled'}": ${validation.reason}`);
+          return;
+        }
+      }
       // Pick a name that doesn't collide with an existing project file.
       // The first run uses `<base>.<ext>`; subsequent runs append `-2`, `-3`…
       // so prior artifacts aren't silently overwritten.
