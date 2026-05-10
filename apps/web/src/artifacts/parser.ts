@@ -42,7 +42,7 @@ type OpenTagMatch =
   | { kind: 'partial'; start: number }
   | { kind: 'none' };
 
-import { computeSkipRanges, rangeContains } from './markdown-context';
+import { computeSkipRanges, FENCE_OPEN_RE, rangeContains } from './markdown-context';
 
 // Scan the buffer for `<artifact …>` while skipping any positions that the
 // chat markdown renderer would render as a fenced code block or inline code
@@ -67,7 +67,7 @@ function findOpenTag(buffer: string): OpenTagMatch {
   if (lastNl < len - 1) {
     const tailLineStart = lastNl + 1;
     const tail = buffer.slice(tailLineStart);
-    if (/^```\w*$/.test(tail) || /^`{1,2}$/.test(tail)) {
+    if (FENCE_OPEN_RE.test(tail) || /^`{1,2}$/.test(tail)) {
       return { kind: 'partial', start: tailLineStart };
     }
   }

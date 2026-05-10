@@ -96,6 +96,36 @@ describe('createArtifactParser', () => {
     expect(events.find((e) => e.type === 'artifact:start')).toBeUndefined();
   });
 
+  it('holds back when a chunk ends mid-line on a renderer-valid fence opener prefix', () => {
+    // lefarcen polish P2: the streaming tail-line guard must mirror the
+    // renderer's FENCE_OPEN_RE shape, not a stricter \w-only subset.
+    // Opener tails like "```c++" (info string with `+`/`-`) or "``` "
+    // (trailing whitespace) are valid renderer openers waiting for a `\n`.
+    // If the parser flushes them as text and then sees a literal `<artifact>`
+    // on the next chunk, that artifact would incorrectly enter artifact mode.
+    const cases: Array<{ name: string; chunks: [string, string] }> = [
+      {
+        name: 'plus suffix',
+        chunks: ['Header.\n```c++', '\n<artifact identifier="x" type="text/plain" title="X">demo</artifact>\n```\n'],
+      },
+      {
+        name: 'dash suffix',
+        chunks: ['Header.\n```ts-', '\n<artifact identifier="x" type="text/plain" title="X">demo</artifact>\n```\n'],
+      },
+      {
+        name: 'trailing space',
+        chunks: ['Header.\n``` ', '\n<artifact identifier="x" type="text/plain" title="X">demo</artifact>\n```\n'],
+      },
+    ];
+    for (const { name, chunks } of cases) {
+      const parser = createArtifactParser();
+      const events: ArtifactEvent[] = [];
+      for (const c of chunks) for (const e of parser.feed(c)) events.push(e);
+      for (const e of parser.flush()) events.push(e);
+      expect(events.find((e) => e.type === 'artifact:start'), name).toBeUndefined();
+    }
+  });
+
   it('does not enter artifact mode when a fenced tag arrives across multiple chunks', () => {
     const parser = createArtifactParser();
     const chunks = [
