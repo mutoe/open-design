@@ -32,6 +32,26 @@ describe('validateHtmlArtifact', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('rejects long prose that mentions an inline <html ...> tag mid-sentence (mrcfps finding)', () => {
+    const prose = 'Updated the <html lang> attribute and cleaned up the footer layout for mobile previews.';
+    expect(prose.length).toBeGreaterThan(64);
+    const result = validateHtmlArtifact(prose);
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects long prose that mentions <!doctype html> mid-sentence', () => {
+    const prose = 'I added a <!doctype html> declaration at the top and rewrote the body section to match the brief.';
+    expect(prose.length).toBeGreaterThan(64);
+    const result = validateHtmlArtifact(prose);
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects content where the first non-whitespace token is a non-document tag like <p>', () => {
+    const fragment = '<p>This is a paragraph that happens to contain enough chars and a stray <html> mention.</p>';
+    const result = validateHtmlArtifact(fragment);
+    expect(result.ok).toBe(false);
+  });
+
   it('accepts a complete <!doctype html> document', () => {
     const html = '<!doctype html><html><head><title>x</title></head><body><h1>hello</h1></body></html>';
     const result = validateHtmlArtifact(html);
