@@ -73,6 +73,29 @@ describe('createArtifactParser', () => {
     });
   });
 
+  it('does not enter artifact mode for a tag wrapped in double backticks', () => {
+    // lefarcen P2: double-backtick code spans (``…``) are valid Markdown.
+    const events = collect(
+      'You can quote it as ``<artifact identifier="x" type="text/html" title="X">`` in prose.',
+    );
+    expect(events.find((e) => e.type === 'artifact:start')).toBeUndefined();
+  });
+
+  it('does not enter artifact mode on a triple-backtick string literal inside a fenced block', () => {
+    // lefarcen P2: fenced JS example whose body contains a string with literal ``` should
+    // not pop fence state early and expose a later <artifact> as real.
+    const events = collect(
+      [
+        '```js',
+        'const fence = "```";',
+        'const tag = "<artifact identifier=\\"x\\" type=\\"text/html\\" title=\\"X\\">";',
+        '```',
+        'After.',
+      ].join('\n'),
+    );
+    expect(events.find((e) => e.type === 'artifact:start')).toBeUndefined();
+  });
+
   it('does not enter artifact mode when a fenced tag arrives across multiple chunks', () => {
     const parser = createArtifactParser();
     const chunks = [
