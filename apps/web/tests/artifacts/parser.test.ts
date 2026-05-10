@@ -58,6 +58,21 @@ describe('createArtifactParser', () => {
     expect(text).toContain('After the fence, more prose.');
   });
 
+  it('still parses a real artifact tag when prose contains an inline triple-backtick that is not a fence', () => {
+    // The chat markdown renderer (apps/web/src/runtime/markdown.tsx) only treats
+    // ``` as a fence when it appears alone on a line. A mid-line ```html that
+    // is not a fence per the renderer must not suppress a real artifact that
+    // follows. (Reported by Codex review on PR #1132.)
+    const events = collect(
+      'The opening marker is ```html and the response then writes:\n<artifact identifier="real" type="text/html" title="Real">\n<h1>real</h1>\n</artifact>',
+    );
+    expect(events.find((e) => e.type === 'artifact:start')).toMatchObject({
+      identifier: 'real',
+      artifactType: 'text/html',
+      title: 'Real',
+    });
+  });
+
   it('does not enter artifact mode when a fenced tag arrives across multiple chunks', () => {
     const parser = createArtifactParser();
     const chunks = [
