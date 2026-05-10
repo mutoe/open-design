@@ -42,88 +42,41 @@ type OpenTagMatch =
   | { kind: 'partial'; start: number }
   | { kind: 'none' };
 
-// Line-anchored fence regex, identical to apps/web/src/runtime/markdown.tsx so
-// the parser's view of "what's a fenced code block" matches what the chat UI
-// will actually render. Mid-line ```html in prose is NOT a fence per the
-// renderer, so it must not be one here either — otherwise a real artifact tag
-// that follows such prose would be wrongly suppressed.
-const FENCE_LINE_RE = /^[ ]{0,3}```(\w[\w+-]*)?\s*$/;
-
-// CommonMark-style inline code span: a single backtick, then one or more
-// non-backtick characters, then a single backtick. Matches the renderer's
-// renderInline regex so the two stay in lockstep.
-const INLINE_CODE_RE = /`[^`]+`/g;
-
-function rangeContains(ranges: Array<readonly [number, number]>, p: number): boolean {
-  for (const [s, e] of ranges) {
-    if (p >= s && p < e) return true;
-  }
-  return false;
-}
+import { computeSkipRanges, rangeContains } from './markdown-context';
 
 // Scan the buffer for `<artifact …>` while skipping any positions that the
 // chat markdown renderer would render as a fenced code block or inline code
-// span. Streaming caveat: when the buffer ends mid-fence (no closing fence
-// yet) or with an unmatched inline backtick, return a partial anchored at the
-// region's start so the caller waits for more data instead of emitting prose
-// that may turn out to be code.
+// span — see ./markdown-context.ts for the shared classification used by both
+// the streaming parser and the post-stream `<artifact>` stripper.
+//
+// Streaming caveats handled here on top of the shared ranges:
+//   * Open fence with no close yet → hold back from its opening line.
+//   * Unterminated tail line that could still resolve into a fence delimiter
+//     (e.g. "```", "```ht") → hold back from the line start.
+//   * Unmatched opening backtick after the last \n → hold back from it; a
+//     future chunk may turn it into an inline code span.
 function findOpenTag(buffer: string): OpenTagMatch {
   const len = buffer.length;
-  const skip: Array<readonly [number, number]> = [];
+  const { ranges, unclosedFenceStart } = computeSkipRanges(buffer);
 
-  // Pass 1: classify whole, \n-terminated lines as fence delimiters and
-  // collect [open-line-start, close-line-end+1) ranges.
-  let pos = 0;
-  let inFence = false;
-  let fenceStart = -1;
-  while (pos < len) {
-    const eol = buffer.indexOf('\n', pos);
-    if (eol === -1) {
-      // The tail is unterminated — we cannot classify it as a fence delimiter
-      // until \n arrives. If we're inside an open fence, hold back from the
-      // opening line so the next chunk can resolve the close.
-      if (inFence) return { kind: 'partial', start: fenceStart };
-      // Otherwise, if the tail looks like the start of a fence delimiter that
-      // hasn't completed yet (e.g. "```", "```ht"), hold back so a future \n
-      // can promote it to a real fence.
-      const tail = buffer.slice(pos);
-      if (/^[ ]{0,3}```\w*$/.test(tail) || /^[ ]{0,3}`{1,2}$/.test(tail)) {
-        return { kind: 'partial', start: pos };
-      }
-      break;
-    }
-    const line = buffer.slice(pos, eol);
-    if (FENCE_LINE_RE.test(line)) {
-      if (!inFence) {
-        inFence = true;
-        fenceStart = pos;
-      } else {
-        inFence = false;
-        skip.push([fenceStart, eol + 1]);
-        fenceStart = -1;
-      }
-    }
-    pos = eol + 1;
-  }
-  if (inFence) return { kind: 'partial', start: fenceStart };
-
-  // Pass 2: collect inline code spans with the same regex the renderer uses.
-  // A span that overlaps a fence range is benign — rangeContains is OR.
-  INLINE_CODE_RE.lastIndex = 0;
-  let m: RegExpExecArray | null = INLINE_CODE_RE.exec(buffer);
-  while (m !== null) {
-    skip.push([m.index, m.index + m[0].length]);
-    m = INLINE_CODE_RE.exec(buffer);
+  if (unclosedFenceStart !== null) {
+    return { kind: 'partial', start: unclosedFenceStart };
   }
 
-  // Streaming: an unmatched opening backtick after the last \n could close in
-  // a future chunk. Hold back from the first such backtick.
   const lastNl = buffer.lastIndexOf('\n');
+  if (lastNl < len - 1) {
+    const tailLineStart = lastNl + 1;
+    const tail = buffer.slice(tailLineStart);
+    if (/^[ ]{0,3}```\w*$/.test(tail) || /^[ ]{0,3}`{1,2}$/.test(tail)) {
+      return { kind: 'partial', start: tailLineStart };
+    }
+  }
+
   let firstUnmatched = -1;
   let parity = 0;
   for (let k = lastNl + 1; k < len; k++) {
     if (buffer.charAt(k) !== '`') continue;
-    if (rangeContains(skip, k)) continue;
+    if (rangeContains(ranges, k)) continue;
     if (parity === 0) {
       firstUnmatched = k;
       parity = 1;
@@ -134,12 +87,11 @@ function findOpenTag(buffer: string): OpenTagMatch {
   }
   if (firstUnmatched !== -1) return { kind: 'partial', start: firstUnmatched };
 
-  // Pass 3: find the first `<artifact …>` that is not in any skip range.
   let from = 0;
   while (from < len) {
     const idx = buffer.indexOf(OPEN_PREFIX, from);
     if (idx === -1) break;
-    if (rangeContains(skip, idx)) {
+    if (rangeContains(ranges, idx)) {
       from = idx + OPEN_PREFIX.length;
       continue;
     }
@@ -169,7 +121,7 @@ function findOpenTag(buffer: string): OpenTagMatch {
 
   // Strict prefix at the tail (e.g. "<art") — hold back.
   const tail = buffer.lastIndexOf('<');
-  if (tail !== -1 && !rangeContains(skip, tail)) {
+  if (tail !== -1 && !rangeContains(ranges, tail)) {
     const slice = buffer.slice(tail);
     if (OPEN_PREFIX.startsWith(slice) && slice.length < OPEN_PREFIX.length) {
       return { kind: 'partial', start: tail };
