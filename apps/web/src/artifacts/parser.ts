@@ -67,7 +67,7 @@ function findOpenTag(buffer: string): OpenTagMatch {
   if (lastNl < len - 1) {
     const tailLineStart = lastNl + 1;
     const tail = buffer.slice(tailLineStart);
-    if (/^[ ]{0,3}```\w*$/.test(tail) || /^[ ]{0,3}`{1,2}$/.test(tail)) {
+    if (/^```\w*$/.test(tail) || /^`{1,2}$/.test(tail)) {
       return { kind: 'partial', start: tailLineStart };
     }
   }

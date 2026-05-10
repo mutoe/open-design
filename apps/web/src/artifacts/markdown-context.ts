@@ -9,8 +9,13 @@
  * literal Markdown and must not be treated as a real protocol tag.
  */
 
-// Line-anchored fence delimiter, mirrors runtime/markdown.tsx:44.
-export const FENCE_LINE_RE = /^[ ]{0,3}```(\w[\w+-]*)?\s*$/;
+// Line-anchored fence delimiters, mirror runtime/markdown.tsx:44 (open) and
+// runtime/markdown.tsx:49 (close). The renderer is asymmetric on purpose:
+// an opening fence may carry an info string (e.g. ```html), a closing fence
+// must be a bare triple-backtick line. Neither permits leading indentation —
+// an indented "   ```" line is rendered as a paragraph, not a fence.
+export const FENCE_OPEN_RE = /^```(\w[\w+-]*)?\s*$/;
+export const FENCE_CLOSE_RE = /^```\s*$/;
 
 // Inline code span (single-backtick pair), mirrors runtime/markdown.tsx:164.
 export const INLINE_CODE_RE = /`[^`]+`/g;
@@ -41,15 +46,15 @@ export function computeSkipRanges(buffer: string): {
     const eol = buffer.indexOf('\n', pos);
     if (eol === -1) break;
     const line = buffer.slice(pos, eol);
-    if (FENCE_LINE_RE.test(line)) {
-      if (!inFence) {
+    if (!inFence) {
+      if (FENCE_OPEN_RE.test(line)) {
         inFence = true;
         fenceStart = pos;
-      } else {
-        inFence = false;
-        ranges.push([fenceStart, eol + 1]);
-        fenceStart = -1;
       }
+    } else if (FENCE_CLOSE_RE.test(line)) {
+      inFence = false;
+      ranges.push([fenceStart, eol + 1]);
+      fenceStart = -1;
     }
     pos = eol + 1;
   }

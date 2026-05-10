@@ -28,7 +28,15 @@ function findUnskipped(content: string, needle: string, fromIndex: number, range
  * end-of-string when a tag is malformed or still streaming).
  */
 export function stripArtifact(content: string): string {
-  const { ranges } = computeSkipRanges(content);
+  const { ranges: baseRanges, unclosedFenceStart } = computeSkipRanges(content);
+  // For complete (non-streaming) content, an unclosed fence is rendered by
+  // the chat Markdown renderer as a code block extending to end of input
+  // (see runtime/markdown.tsx:49 — the close-loop runs until lines exhaust).
+  // The stripper has to mirror that, otherwise a literal `<artifact …>`
+  // tucked into a code example at the bottom of a chat reply (no trailing
+  // newline) gets treated as a real protocol tag and eaten.
+  const ranges: Range[] =
+    unclosedFenceStart !== null ? [...baseRanges, [unclosedFenceStart, content.length]] : baseRanges;
   const open = findUnskipped(content, OPEN, 0, ranges);
   if (open === -1) return content;
   const closeTag = content.indexOf('>', open);
