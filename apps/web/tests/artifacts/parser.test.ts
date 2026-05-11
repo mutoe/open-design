@@ -126,6 +126,37 @@ describe('createArtifactParser', () => {
     }
   });
 
+  it('parses a real artifact between paragraphs that each carry a stray backtick', () => {
+    // Inline code is paragraph-local in the renderer; an unbalanced backtick
+    // in one paragraph must not bridge across a blank line to pair with a
+    // backtick in a later paragraph and swallow a real <artifact …> in
+    // between (mrcfps's 2026-05-11 repro).
+    const events = collect(
+      [
+        'intro `',
+        '',
+        '<artifact identifier="x" type="text/plain" title="X">demo</artifact>',
+        '',
+        'closing `',
+      ].join('\n'),
+    );
+    expect(events.find((e) => e.type === 'artifact:start')).toBeDefined();
+    expect(events.find((e) => e.type === 'artifact:end')).toBeDefined();
+  });
+
+  it('does not enter artifact mode for <artifactual> or other prefix-shared identifiers', () => {
+    // `<artifact` must be followed by whitespace to count as a real open;
+    // strings like `<artifactual>` are not protocol tags and must survive as
+    // literal text on both the parser and the stripper sides.
+    const events = collect('prefix <artifactual>demo</artifact> suffix');
+    expect(events.find((e) => e.type === 'artifact:start')).toBeUndefined();
+    const text = events
+      .filter((e): e is Extract<ArtifactEvent, { type: 'text' }> => e.type === 'text')
+      .map((e) => e.delta)
+      .join('');
+    expect(text).toBe('prefix <artifactual>demo</artifact> suffix');
+  });
+
   it('does not enter artifact mode when a fenced tag arrives across multiple chunks', () => {
     const parser = createArtifactParser();
     const chunks = [

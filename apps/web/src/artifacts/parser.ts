@@ -42,7 +42,7 @@ type OpenTagMatch =
   | { kind: 'partial'; start: number }
   | { kind: 'none' };
 
-import { computeSkipRanges, FENCE_OPEN_RE, rangeContains } from './markdown-context';
+import { computeSkipRanges, FENCE_OPEN_RE, isRealArtifactOpenAt, rangeContains } from './markdown-context';
 
 // Scan the buffer for `<artifact …>` while skipping any positions that the
 // chat markdown renderer would render as a fenced code block or inline code
@@ -59,34 +59,11 @@ function findOpenTag(buffer: string): OpenTagMatch {
   const len = buffer.length;
   const { ranges, unclosedFenceStart } = computeSkipRanges(buffer);
 
-  if (unclosedFenceStart !== null) {
-    return { kind: 'partial', start: unclosedFenceStart };
-  }
-
-  const lastNl = buffer.lastIndexOf('\n');
-  if (lastNl < len - 1) {
-    const tailLineStart = lastNl + 1;
-    const tail = buffer.slice(tailLineStart);
-    if (FENCE_OPEN_RE.test(tail) || /^`{1,2}$/.test(tail)) {
-      return { kind: 'partial', start: tailLineStart };
-    }
-  }
-
-  let firstUnmatched = -1;
-  let parity = 0;
-  for (let k = lastNl + 1; k < len; k++) {
-    if (buffer.charAt(k) !== '`') continue;
-    if (rangeContains(ranges, k)) continue;
-    if (parity === 0) {
-      firstUnmatched = k;
-      parity = 1;
-    } else {
-      firstUnmatched = -1;
-      parity = 0;
-    }
-  }
-  if (firstUnmatched !== -1) return { kind: 'partial', start: firstUnmatched };
-
+  // Pass 1: scan for the earliest *complete* real `<artifact …>` open outside
+  // any skip range. Done before any hold-back decision, otherwise a stray
+  // backtick or fence-opener prefix on a tail line would suppress an already
+  // self-contained artifact earlier in the buffer.
+  let earliestPartialOpen = -1;
   let from = 0;
   while (from < len) {
     const idx = buffer.indexOf(OPEN_PREFIX, from);
@@ -95,10 +72,21 @@ function findOpenTag(buffer: string): OpenTagMatch {
       from = idx + OPEN_PREFIX.length;
       continue;
     }
+    if (unclosedFenceStart !== null && idx >= unclosedFenceStart) {
+      // Anything past an unclosed fence opener is inside a code block that
+      // will close in a later chunk (or at end-of-buffer for the stripper);
+      // treat as skip range, not a real tag.
+      break;
+    }
     const after = idx + OPEN_PREFIX.length;
     const next = buffer.charAt(after);
-    if (next === '') return { kind: 'partial', start: idx };
-    if (!/\s/.test(next)) {
+    if (next === '') {
+      // `<artifact` at very end of buffer — could become real with the next
+      // chunk. Remember the earliest one and keep looking for a complete tag.
+      if (earliestPartialOpen === -1) earliestPartialOpen = idx;
+      break;
+    }
+    if (!isRealArtifactOpenAt(buffer, idx)) {
       // Not a real <artifact ...> open (e.g. "<artifactual"). Keep scanning.
       from = after;
       continue;
@@ -116,18 +104,57 @@ function findOpenTag(buffer: string): OpenTagMatch {
       }
       j++;
     }
-    return { kind: 'partial', start: idx };
+    // Ran out of buffer before the closing `>` arrived — this is an open tag
+    // mid-stream. Remember and stop scanning (any later `<artifact` would be
+    // a second tag we'd reach next chunk).
+    if (earliestPartialOpen === -1) earliestPartialOpen = idx;
+    break;
   }
 
-  // Strict prefix at the tail (e.g. "<art") — hold back.
-  const tail = buffer.lastIndexOf('<');
-  if (tail !== -1 && !rangeContains(ranges, tail)) {
-    const slice = buffer.slice(tail);
-    if (OPEN_PREFIX.startsWith(slice) && slice.length < OPEN_PREFIX.length) {
-      return { kind: 'partial', start: tail };
+  // Pass 2: no complete open found. Decide whether to hold back, and if so,
+  // from which position. Earliest hold-back wins so the text-flush boundary
+  // never crosses something that might still resolve into a tag/fence/span.
+  let holdback = -1;
+  const note = (pos: number | null) => {
+    if (pos !== null && pos !== -1 && (holdback === -1 || pos < holdback)) holdback = pos;
+  };
+  note(earliestPartialOpen);
+  note(unclosedFenceStart);
+
+  const lastNl = buffer.lastIndexOf('\n');
+  if (lastNl < len - 1) {
+    const tailLineStart = lastNl + 1;
+    const tail = buffer.slice(tailLineStart);
+    if (FENCE_OPEN_RE.test(tail) || /^`{1,2}$/.test(tail)) {
+      note(tailLineStart);
     }
   }
 
+  let firstUnmatched = -1;
+  let parity = 0;
+  for (let k = lastNl + 1; k < len; k++) {
+    if (buffer.charAt(k) !== '`') continue;
+    if (rangeContains(ranges, k)) continue;
+    if (parity === 0) {
+      firstUnmatched = k;
+      parity = 1;
+    } else {
+      firstUnmatched = -1;
+      parity = 0;
+    }
+  }
+  note(firstUnmatched);
+
+  // Strict prefix at the tail (e.g. "<art") — hold back.
+  const tailLt = buffer.lastIndexOf('<');
+  if (tailLt !== -1 && !rangeContains(ranges, tailLt)) {
+    const slice = buffer.slice(tailLt);
+    if (OPEN_PREFIX.startsWith(slice) && slice.length < OPEN_PREFIX.length) {
+      note(tailLt);
+    }
+  }
+
+  if (holdback !== -1) return { kind: 'partial', start: holdback };
   return { kind: 'none' };
 }
 

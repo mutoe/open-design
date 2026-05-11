@@ -1,4 +1,4 @@
-import { computeSkipRanges, rangeContains, type Range } from './markdown-context';
+import { computeSkipRanges, isRealArtifactOpenAt, rangeContains, type Range } from './markdown-context';
 
 const OPEN = '<artifact';
 const CLOSE = '</artifact>';
@@ -10,6 +10,24 @@ function findUnskipped(content: string, needle: string, fromIndex: number, range
     if (idx === -1) return -1;
     if (!rangeContains(ranges, idx)) return idx;
     from = idx + needle.length;
+  }
+  return -1;
+}
+
+// Like `findUnskipped(OPEN, …)` but also rejects prefix-shared literals like
+// `<artifactual` — only `<artifact` followed by whitespace counts as a real
+// protocol open. Matches the parser's `findOpenTag` real-open guard so the
+// two paths agree on what the renderer will treat as a tag.
+function findRealOpen(content: string, fromIndex: number, ranges: ReadonlyArray<Range>): number {
+  let from = fromIndex;
+  while (from <= content.length) {
+    const idx = content.indexOf(OPEN, from);
+    if (idx === -1) return -1;
+    if (rangeContains(ranges, idx) || !isRealArtifactOpenAt(content, idx)) {
+      from = idx + OPEN.length;
+      continue;
+    }
+    return idx;
   }
   return -1;
 }
@@ -37,7 +55,7 @@ export function stripArtifact(content: string): string {
   // newline) gets treated as a real protocol tag and eaten.
   const ranges: Range[] =
     unclosedFenceStart !== null ? [...baseRanges, [unclosedFenceStart, content.length]] : baseRanges;
-  const open = findUnskipped(content, OPEN, 0, ranges);
+  const open = findRealOpen(content, 0, ranges);
   if (open === -1) return content;
   const closeTag = content.indexOf('>', open);
   if (closeTag === -1) return content;

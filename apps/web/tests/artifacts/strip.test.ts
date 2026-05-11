@@ -71,6 +71,32 @@ describe('stripArtifact', () => {
     expect(out).toContain('Tail.');
   });
 
+  it('strips a real artifact between paragraphs that each carry a stray backtick', () => {
+    // Inline code spans are paragraph-local in the renderer; an unbalanced
+    // backtick in one paragraph must not bridge across a blank line to pair
+    // with a backtick in another paragraph and accidentally classify a real
+    // <artifact …> between them as inline code (mrcfps's 2026-05-11 repro).
+    const input = [
+      'intro `',
+      '',
+      '<artifact identifier="x" type="text/plain" title="X">demo</artifact>',
+      '',
+      'closing `',
+    ].join('\n');
+    const out = stripArtifact(input);
+    expect(out).not.toContain('<artifact');
+    expect(out).toContain('intro `');
+    expect(out).toContain('closing `');
+  });
+
+  it('does not strip <artifactual> or other prefix-shared identifiers', () => {
+    // The streaming parser only treats `<artifact` as a real open when the
+    // next char is whitespace; the stripper must apply the same rule, else
+    // literal prose mentioning `<artifactual>` gets silently truncated.
+    const input = 'prefix <artifactual>demo</artifact> suffix';
+    expect(stripArtifact(input)).toBe(input);
+  });
+
   it('preserves a tag inside a fenced block that contains a `\`\`\`html` line in its body', () => {
     // The renderer closes a fence only on a bare "```\\s*$" — a "```html"
     // line inside an open fence is kept as code content. The stripper must
