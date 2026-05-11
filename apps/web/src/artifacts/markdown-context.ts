@@ -20,28 +20,21 @@ export const FENCE_CLOSE_RE = /^```\s*$/;
 // Inline code span (single-backtick pair), mirrors runtime/markdown.tsx:164.
 export const INLINE_CODE_RE = /`[^`]+`/g;
 
-// Block-starter recognizers used by `parseBlocks()` in runtime/markdown.tsx:33-108.
-// `renderInline` only runs within a single block, so inline-code scanning must
-// reset at every block boundary — otherwise an unmatched backtick in one
-// paragraph can bridge across a blank line/heading/list/hr/fence into a later
-// paragraph and create a phantom inline span that swallows a real <artifact …>.
+// Paragraph-break recognizers — these mirror the inner paragraph-accumulation
+// loop in `parseBlocks()` (runtime/markdown.tsx:95-104), which is what
+// actually decides where a paragraph ends. The outer loop in `parseBlocks`
+// has additional block-starters (HR, fenced-code with `^```` prefix, etc.)
+// but those only take effect when no paragraph is currently being built;
+// mid-paragraph they are paragraph content. The renderer therefore treats
+// `intro \`` / `---` / `<artifact …>` / `---` / `closing \`` as ONE paragraph
+// whose backticks pair across the recitation — so this walker must too.
 //
-// Keep these in lock step with runtime/markdown.tsx:39 (blank), :59 (heading),
-// :67 (hr), :73 (ul), :83 (ol). Fence-open/close are already handled by the
-// fence pass above.
+// Notable omission: HR — see comment above. HR-shaped lines (`---` / `***`
+// / `___`) carry no backticks of their own, so leaving them inside the
+// surrounding paragraph region is benign for inline-code scanning either way.
 const HEADING_RE = /^#{1,4}\s+/;
-const HR_RE = /^\s*(?:-{3,}|_{3,}|\*{3,})\s*$/;
 const UL_ITEM_RE = /^\s*[-*+]\s+/;
 const OL_ITEM_RE = /^\s*\d+\.\s+/;
-
-function isBlockStarter(line: string): boolean {
-  if (line.trim() === '') return true;
-  if (HEADING_RE.test(line)) return true;
-  if (HR_RE.test(line)) return true;
-  if (UL_ITEM_RE.test(line)) return true;
-  if (OL_ITEM_RE.test(line)) return true;
-  return false;
-}
 
 // `<artifact` followed by whitespace is a real protocol open tag; any other
 // continuation (e.g. `<artifactual`) is a prefix-shared literal that must not
@@ -94,9 +87,8 @@ export function computeSkipRanges(buffer: string): {
         closeBlockBefore(pos);
         inFence = true;
         fenceStart = pos;
-      } else if (line.trim() === '' || HR_RE.test(line)) {
-        // Blank lines / horizontal rules separate blocks and have no inline
-        // content of their own.
+      } else if (line.trim() === '') {
+        // Blank lines separate blocks.
         closeBlockBefore(pos);
       } else if (HEADING_RE.test(line) || UL_ITEM_RE.test(line) || OL_ITEM_RE.test(line)) {
         // Heading and list-item lines are each their own block in the

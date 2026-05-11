@@ -144,6 +144,23 @@ describe('createArtifactParser', () => {
     expect(events.find((e) => e.type === 'artifact:end')).toBeDefined();
   });
 
+  it('does not enter artifact mode when bridged by stray backticks across HR-shaped lines', () => {
+    // Renderer's paragraph loop does not break on HR (runtime/markdown.tsx:95-104),
+    // so `intro \`\n---\n<artifact …>…</artifact>\n---\nclosing \`` is one paragraph
+    // and the backticks pair to cover the literal recitation. mrcfps's
+    // 2026-05-11 05:46 follow-up — the skip-range walker must not split on HR.
+    const events = collect(
+      [
+        'intro `',
+        '---',
+        '<artifact identifier="x" type="text/plain" title="X">demo</artifact>',
+        '---',
+        'closing `',
+      ].join('\n'),
+    );
+    expect(events.find((e) => e.type === 'artifact:start')).toBeUndefined();
+  });
+
   it('does not enter artifact mode for <artifactual> or other prefix-shared identifiers', () => {
     // `<artifact` must be followed by whitespace to count as a real open;
     // strings like `<artifactual>` are not protocol tags and must survive as

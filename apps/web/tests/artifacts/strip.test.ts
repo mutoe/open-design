@@ -89,6 +89,23 @@ describe('stripArtifact', () => {
     expect(out).toContain('closing `');
   });
 
+  it('preserves a tag bridged by stray backticks across HR-shaped lines (renderer keeps HR as paragraph content)', () => {
+    // runtime/markdown.tsx:95-104's paragraph-accumulation loop only breaks on
+    // blank / fence / heading / ul / ol — it does NOT break on HR. So a buffer
+    // shaped `intro \`` / `---` / `<artifact …>…</artifact>` / `---` / `closing \``
+    // is one paragraph in the renderer, and the two stray backticks pair to
+    // cover the literal artifact recitation. The skip-range walker must mirror
+    // that (mrcfps's 2026-05-11 05:46 follow-up).
+    const input = [
+      'intro `',
+      '---',
+      '<artifact identifier="x" type="text/plain" title="X">demo</artifact>',
+      '---',
+      'closing `',
+    ].join('\n');
+    expect(stripArtifact(input)).toBe(input);
+  });
+
   it('does not strip <artifactual> or other prefix-shared identifiers', () => {
     // The streaming parser only treats `<artifact` as a real open when the
     // next char is whitespace; the stripper must apply the same rule, else
