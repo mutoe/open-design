@@ -255,6 +255,43 @@ export function htmlNeedsPoweredPreview(source: string | null | undefined): bool
   return false;
 }
 
+/**
+ * True when the HTML source references another local `.html` / `.htm` file —
+ * i.e. the artifact is part of a multi-page design draft that wants to
+ * navigate between siblings.
+ *
+ * The URL-load iframe runs raw HTML, so any navigation (whether from a
+ * literal `<a href>` or a click handler that calls `location.assign`)
+ * replaces the design preview. The srcDoc path runs the link bridge in
+ * `injectSandboxShim`, which intercepts those clicks and asks the host to
+ * open the linked file as a sibling tab. Forcing srcDoc here is what
+ * routes multi-page projects through that bridge.
+ *
+ * We scan *any* attribute value, not just `<a href>`, because real-world
+ * multi-page templates often inject navigation through custom elements
+ * (e.g. `<od-topbar home="index.html">` whose `connectedCallback` writes
+ * the `<a>` at runtime). The static source has no `<a>` tag for that link
+ * but it still navigates to a sibling at click time.
+ *
+ * Heuristic, not exhaustive — false positives just take the (slightly
+ * slower but safer) srcDoc path, and external URLs with `.html` paths are
+ * excluded by the `://` and `mailto:` guard. Pure string scan: caller
+ * passes the same `source` already fetched for preview rendering.
+ */
+export function htmlHasLocalLinks(source: string): boolean {
+  const re = /=\s*(?:"([^"]*?\.html?(?:[#?][^"]*)?)"|'([^']*?\.html?(?:[#?][^']*)?)')/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source))) {
+    const raw = (m[1] ?? m[2] ?? '').trim();
+    if (!raw) continue;
+    if (raw.startsWith('#')) continue;
+    if (raw.startsWith('//')) continue;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) continue;
+    return true;
+  }
+  return false;
+}
+
 export function htmlNeedsSandboxShim(source: string): boolean {
   // Quote-optional: HTML5 permits unquoted attribute values
   // (`<script type=text/babel src=app.jsx>`). The trailing `\b` rejects

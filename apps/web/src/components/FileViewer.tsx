@@ -1822,6 +1822,11 @@ interface Props {
   // atomic tab-state update. The React module pointer uses this to jump to the
   // HTML entry that renders a module and drop the dead-end module tab.
   onOpenFileReplacing?: (openName: string, closeName: string) => void;
+  // Open `name` as a sibling tab (focusing it) without closing the current
+  // one. The HTML preview link bridge calls this when the user clicks a
+  // relative <a> link in a multi-page design — clicking the link should
+  // jump to the target file's tab, not replace the design preview.
+  onOpenFile?: (name: string) => void;
   commentPortalId?: string;
   onCommentModeChange?: (active: boolean) => void;
   // Bumped nonce asking this viewer to open its Share/Export menu (chat-side
@@ -1914,6 +1919,7 @@ export const FileViewer = memo(function FileViewer({
   onFileSaved,
   onBrandExtractionStopRequest,
   onOpenFileReplacing,
+  onOpenFile,
   commentPortalId,
   onCommentModeChange,
   shareRequest,
@@ -2003,6 +2009,7 @@ export const FileViewer = memo(function FileViewer({
         onFileSaved={onFileSaved}
         onBrandExtractionStopRequest={onBrandExtractionStopRequest}
         onOpenFileReplacing={onOpenFileReplacing}
+        onOpenFile={onOpenFile}
         commentPortalId={commentPortalId}
         onCommentModeChange={onCommentModeChange}
         shareRequest={shareRequest}
@@ -7414,6 +7421,7 @@ function HtmlViewer({
   onFileSaved,
   onBrandExtractionStopRequest,
   onOpenFileReplacing,
+  onOpenFile,
   commentPortalId,
   onCommentModeChange,
   shareRequest,
@@ -7449,6 +7457,7 @@ function HtmlViewer({
   onFileSaved?: () => Promise<void> | void;
   onBrandExtractionStopRequest?: () => void;
   onOpenFileReplacing?: (openName: string, closeName: string) => void;
+  onOpenFile?: (name: string) => void;
   commentPortalId?: string;
   onCommentModeChange?: (active: boolean) => void;
   shareRequest?: { nonce: number } | null;
@@ -12019,6 +12028,24 @@ function HtmlViewer({
     previewStateKey,
     workspaceActive,
   ]);
+
+  // Relative-link bridge: a multi-page HTML design (e.g. an index page with
+  // links to sibling artifact pages) posts `od:open-file` when the user
+  // clicks a relative <a>. Route that to the host so the target opens as
+  // a sibling tab instead of replacing the design preview iframe.
+  useEffect(() => {
+    if (!onOpenFile) return;
+    function onMessage(ev: MessageEvent) {
+      if (!isOurPreviewIframeSource(ev.source)) return;
+      if (!isActivePreviewIframeSource(ev.source)) return;
+      const data = ev?.data as { type?: string; name?: string } | null;
+      if (!data || data.type !== 'od:open-file' || typeof data.name !== 'string') return;
+      if (!data.name) return;
+      onOpenFile?.(data.name);
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [onOpenFile, isActivePreviewIframeSource, isOurPreviewIframeSource]);
 
   useEffect(() => {
     if (!workspaceActive) return;

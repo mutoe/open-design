@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   hasTweaksTemplate,
   hasUrlModeBridge,
+  htmlHasLocalLinks,
   htmlNeedsFocusGuard,
   htmlNeedsPoweredPreview,
   htmlNeedsRedirectGuard,
@@ -10,6 +11,39 @@ import {
   parseForceInline,
   shouldUrlLoadHtmlPreview,
 } from '../../src/components/file-viewer-render-mode';
+
+describe('htmlHasLocalLinks', () => {
+  it('detects relative .html links', () => {
+    expect(htmlHasLocalLinks('<a href="page2.html">go</a>')).toBe(true);
+    expect(htmlHasLocalLinks('<a href="./page2.html">go</a>')).toBe(true);
+    expect(htmlHasLocalLinks('<a href="sub/page.html">go</a>')).toBe(true);
+  });
+
+  it('detects multi-page navigation injected via custom elements', () => {
+    // Real-world template: <od-topbar> renders its own <a href> at runtime
+    // from a `home="..."` attribute, so the static source has no <a> tag.
+    expect(htmlHasLocalLinks('<od-topbar home="index.html"></od-topbar>')).toBe(true);
+    expect(htmlHasLocalLinks("<od-card target='detail.html'>")).toBe(true);
+  });
+
+  it('ignores anchors, external URLs, protocol-relative URLs, and javascript:', () => {
+    expect(htmlHasLocalLinks('<a href="#section">a</a>')).toBe(false);
+    expect(htmlHasLocalLinks('<a href="https://example.com">x</a>')).toBe(false);
+    expect(htmlHasLocalLinks('<a href="//cdn.example.com/x">x</a>')).toBe(false);
+    expect(htmlHasLocalLinks('<a href="mailto:hi@x.com">m</a>')).toBe(false);
+    expect(htmlHasLocalLinks('<a href="javascript:void(0)">x</a>')).toBe(false);
+  });
+
+  it('ignores attributes whose .html value is part of an absolute URL', () => {
+    expect(
+      htmlHasLocalLinks('<link rel="canonical" href="https://example.com/about.html">'),
+    ).toBe(false);
+  });
+
+  it('returns false on HTML with no anchors', () => {
+    expect(htmlHasLocalLinks('<div>no links here</div>')).toBe(false);
+  });
+});
 
 describe('shouldUrlLoadHtmlPreview', () => {
   const base = { mode: 'preview' as const, isDeck: false, commentMode: false, forceInline: false };

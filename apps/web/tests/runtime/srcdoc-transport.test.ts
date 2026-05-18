@@ -6,6 +6,7 @@ import {
   buildLazySrcdocTransport,
   buildSrcdoc,
   canActivateSrcDocTransport,
+  shouldRebuildSrcDocShell,
   type SrcDocActivationInputs,
 } from '../../src/runtime/srcdoc';
 
@@ -289,6 +290,67 @@ describe('canActivateSrcDocTransport (#2253)', () => {
     expect(
       canActivateSrcDocTransport({
         ...BASE_STATE,
+        activatedHtml: '<html>previous</html>',
+      }),
+    ).toBe(true);
+  });
+});
+
+describe('shouldRebuildSrcDocShell (Web Component re-activation)', () => {
+  it('returns false on the very first activation (no prior write)', () => {
+    expect(shouldRebuildSrcDocShell({ ...BASE_STATE, activatedHtml: null })).toBe(false);
+  });
+
+  it('returns false when re-activating the same html (dedupe path)', () => {
+    expect(
+      shouldRebuildSrcDocShell({ ...BASE_STATE, activatedHtml: BASE_STATE.srcDoc }),
+    ).toBe(false);
+  });
+
+  it('returns true when activatedHtml differs — second document.write would collide on top-level class', () => {
+    expect(
+      shouldRebuildSrcDocShell({
+        ...BASE_STATE,
+        activatedHtml: '<html>previous</html>',
+      }),
+    ).toBe(true);
+  });
+
+  it('returns false in URL-load mode (no shell to rebuild)', () => {
+    expect(
+      shouldRebuildSrcDocShell({
+        ...BASE_STATE,
+        useUrlLoadPreview: true,
+        activatedHtml: '<html>previous</html>',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when the lazy transport is bypassed', () => {
+    expect(
+      shouldRebuildSrcDocShell({
+        ...BASE_STATE,
+        useLazySrcDocTransport: false,
+        activatedHtml: '<html>previous</html>',
+      }),
+    ).toBe(false);
+  });
+
+  it('returns false when srcDoc is empty (nothing to activate yet)', () => {
+    expect(
+      shouldRebuildSrcDocShell({
+        ...BASE_STATE,
+        srcDoc: '',
+        activatedHtml: '<html>previous</html>',
+      }),
+    ).toBe(false);
+  });
+
+  it('is independent of shellReady — the rebuild path itself flips shellReady back to false', () => {
+    expect(
+      shouldRebuildSrcDocShell({
+        ...BASE_STATE,
+        shellReady: false,
         activatedHtml: '<html>previous</html>',
       }),
     ).toBe(true);

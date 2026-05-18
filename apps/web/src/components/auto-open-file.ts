@@ -39,6 +39,21 @@ function basenameOf(p: string): string {
   return p.split('/').pop() ?? p;
 }
 
+// Source/style files: the agent edits these as scaffolding for an HTML or
+// markdown design draft. Surfacing them as tabs is noise — the user wants to
+// look at the rendered design, not the underlying .js / .css.
+const NON_VIEWABLE_EXTENSIONS = new Set([
+  'js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs',
+  'css', 'scss', 'sass', 'less',
+]);
+
+function isNonViewable(filePath: string): boolean {
+  const base = basenameOf(filePath);
+  const dot = base.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return NON_VIEWABLE_EXTENSIONS.has(base.slice(dot + 1).toLowerCase());
+}
+
 export function decideAutoOpenAfterWrite(
   filePath: string,
   nextFiles: ReadonlyArray<CandidateFile>,
@@ -53,6 +68,7 @@ export function decideAutoOpenAfterWrite(
       : { shouldOpen: true, fileName };
 
   if (!filePath) return { shouldOpen: false, fileName: null };
+  if (isNonViewable(filePath)) return { shouldOpen: false, fileName: null };
 
   // 1) Path-suffix match against full project-relative paths.
   const suffixMatches: CandidateFile[] = [];

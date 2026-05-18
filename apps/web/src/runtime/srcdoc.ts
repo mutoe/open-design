@@ -530,6 +530,35 @@ export function canActivateSrcDocTransport(state: SrcDocActivationInputs): boole
   return true;
 }
 
+/**
+ * True when the host must rebuild the srcDoc shell iframe (via a key bump)
+ * before activating new content, instead of writing the new srcDoc into the
+ * existing shell.
+ *
+ * The shell injects new HTML via `document.open(); document.write(...)`. The
+ * Window's global lexical scope (top-level `class` / `let` / `const`
+ * declarations, the `customElements` registry) survives `document.open()`,
+ * so artifacts that declare a Web Component at top level — e.g.
+ * `class OdTopbar extends HTMLElement; customElements.define('od-topbar', …)`
+ * — throw `SyntaxError: Identifier 'OdTopbar' has already been declared`
+ * (or `NotSupportedError` from `customElements.define`) on the second
+ * activation. The aborted script means any deferred wiring in the same file
+ * (theme button click handlers, sidebar nav, …) never runs and the artifact
+ * looks half-broken to the user.
+ *
+ * Skip on first activation (no prior write) and on identical re-activation
+ * (the dedupe in `canActivateSrcDocTransport` already drops those). Skip
+ * during URL-load mode and when the lazy transport is bypassed.
+ */
+export function shouldRebuildSrcDocShell(state: SrcDocActivationInputs): boolean {
+  if (!state.srcDoc) return false;
+  if (state.useUrlLoadPreview) return false;
+  if (!state.useLazySrcDocTransport) return false;
+  if (state.activatedHtml === null) return false;
+  if (state.activatedHtml === state.srcDoc) return false;
+  return true;
+}
+
 function injectSrcdocTransportActivationBridge(doc: string, generation: string): string {
   const encodedGeneration = JSON.stringify(generation);
   const markerGeneration = generation
@@ -1676,6 +1705,24 @@ function injectSandboxShim(doc: string): string {
           url.protocol === 'mailto:';
       } catch (_) {}
       safe && window.open(href, '_blank', 'noopener,noreferrer');
+    } else {
+      // Same-frame nav to a relative file: route to host so it opens as
+      // a sibling tab instead of replacing the design preview iframe.
+      // Reject anything with an absolute scheme (http:, https:, mailto:,
+      // javascript:, data:, about:, ...) — those should keep their native
+      // browser behavior or be blocked by sandbox as before.
+      if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return;
+      if (href.startsWith('//')) return;
+      // Backslashes inside this template literal collapse on parse
+      // (e.g. \\. -> .), so a literal regex like /^\\.\\// would deserialize
+      // into /^.// inside the iframe and throw "Unexpected token ','".
+      // Strip the ./ and leading / prefixes with explicit string ops instead.
+      var name = href.split('#')[0].split('?')[0];
+      if (name.indexOf('./') === 0) name = name.slice(2);
+      while (name.charAt(0) === '/') name = name.slice(1);
+      if (!name) return;
+      e.preventDefault();
+      parent.postMessage({ type: 'od:open-file', name: name }, '*');
     }
   });
 })();</script>`;

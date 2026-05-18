@@ -36,27 +36,37 @@ describe('decideAutoOpenAfterWrite', () => {
   });
 
   it('falls back to basename match when filePath is just a basename', () => {
-    const result = decideAutoOpenAfterWrite('App.jsx', [
+    const result = decideAutoOpenAfterWrite('page2.html', [
       { name: 'index.html', path: 'index.html' },
-      { name: 'App.jsx', path: 'App.jsx' },
+      { name: 'page2.html', path: 'page2.html' },
       { name: 'styles.css', path: 'styles.css' },
       { name: 'README.md', path: 'README.md' },
     ]);
-    expect(result).toEqual({ shouldOpen: true, fileName: 'App.jsx' });
+    expect(result).toEqual({ shouldOpen: true, fileName: 'page2.html' });
   });
 
   it('matches an absolute filePath via path-suffix against a nested project file', () => {
     // Real-world case: the agent passes an absolute file_path; the project
-    // file lives at "prototype/App.jsx". The decision must still resolve
+    // file lives at "prototype/page.html". The decision must still resolve
     // unambiguously, returning the project-relative file name.
     const result = decideAutoOpenAfterWrite(
-      '/home/bryan/projects/open-design/.od/projects/abc/prototype/App.jsx',
+      '/home/bryan/projects/open-design/.od/projects/abc/prototype/page.html',
       [
         { name: 'index.html', path: 'index.html' },
-        { name: 'prototype/App.jsx', path: 'prototype/App.jsx' },
+        { name: 'prototype/page.html', path: 'prototype/page.html' },
       ],
     );
-    expect(result).toEqual({ shouldOpen: true, fileName: 'prototype/App.jsx' });
+    expect(result).toEqual({ shouldOpen: true, fileName: 'prototype/page.html' });
+  });
+
+  it('declines non-viewable source/style files (.js, .css, .ts, ...)', () => {
+    // Agent edited a scaffolding file; the user wants to see the rendered
+    // design draft, not the underlying source file. These should never
+    // auto-open as tabs even when they exist in the project.
+    for (const file of ['app.js', 'styles.css', 'App.jsx', 'main.ts', 'theme.scss']) {
+      const result = decideAutoOpenAfterWrite(file, [{ name: file, path: file }]);
+      expect(result).toEqual({ shouldOpen: false, fileName: null });
+    }
   });
 
   it('declines when an absolute filePath could match multiple nested project files (ambiguous)', () => {
@@ -96,9 +106,9 @@ describe('decideAutoOpenAfterWrite', () => {
   });
 
   it('declines a basename fallback when multiple project files share the basename', () => {
-    const result = decideAutoOpenAfterWrite('App.jsx', [
-      { name: 'src/App.jsx', path: 'src/App.jsx' },
-      { name: 'lib/App.jsx', path: 'lib/App.jsx' },
+    const result = decideAutoOpenAfterWrite('page.html', [
+      { name: 'src/page.html', path: 'src/page.html' },
+      { name: 'lib/page.html', path: 'lib/page.html' },
     ]);
     expect(result).toEqual({ shouldOpen: false, fileName: null });
   });
@@ -122,11 +132,13 @@ describe('decideAutoOpenAfterWrite', () => {
   it('still auto-opens the same file when no module set is supplied (back-compat)', () => {
     // Proves the suppression is driven solely by moduleFileNames: the legacy
     // two-arg call path is unchanged, so this test goes red if the guard ever
-    // suppresses unconditionally.
-    const result = decideAutoOpenAfterWrite('icons.jsx', [
-      { name: 'icons.jsx', path: 'icons.jsx' },
+    // suppresses unconditionally. Uses .html instead of a source extension
+    // because the source-file guard added alongside the link bridge filters
+    // .jsx/.ts/.css/... independently.
+    const result = decideAutoOpenAfterWrite('preview.html', [
+      { name: 'preview.html', path: 'preview.html' },
     ]);
-    expect(result).toEqual({ shouldOpen: true, fileName: 'icons.jsx' });
+    expect(result).toEqual({ shouldOpen: true, fileName: 'preview.html' });
   });
 
   it('still auto-opens a standalone artifact even when other modules exist', () => {
