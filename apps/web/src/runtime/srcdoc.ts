@@ -634,6 +634,49 @@ function injectSnapshotBridge(doc: string): string {
     }
     target.setAttribute('style', style);
   }
+  // Convert every <img> in the clone tree to a data: URL so the SVG
+  // foreignObject renders it. Two cooperating constraints make this
+  // non-obvious:
+  //
+  //   1. SVG loaded from a data: URL can't fetch any sub-resource, so the
+  //      cloned <img src="logo.svg"> would render blank in the snapshot
+  //      even though the live page shows it perfectly.
+  //   2. The artifact runs in a sandboxed iframe without same-origin
+  //      access, whose effective Origin is "null". drawImage(img) on a same-server
+  //      image therefore taints the canvas and toDataURL() throws
+  //      SecurityError — that's why a straightforward drawImage approach
+  //      silently falls back to URL (and fails in the SVG).
+  //
+  // The daemon's raw-file route already echoes Access-Control-Allow-Origin:*
+  // for Origin: null callers (see apps/daemon/src/project-routes.ts), so a
+  // plain fetch() from inside the iframe succeeds and returns readable
+  // bytes. We then base64-encode the blob and inline it. No canvas, no
+  // tainting, no per-image bitmap sizing guesswork.
+  function inlineImagesAsDataUrls(cloneRoot){
+    var imgs = Array.prototype.slice.call(cloneRoot.querySelectorAll('img'));
+    return Promise.all(imgs.map(function(img){
+      var src;
+      try { src = img.src; } catch (_) { return Promise.resolve(); }
+      if (!src) return Promise.resolve();
+      if (src.indexOf('data:') === 0) return Promise.resolve();
+      if (src.indexOf('blob:') === 0) return Promise.resolve();
+      return fetch(src, { credentials: 'same-origin' })
+        .then(function(resp){ return resp.ok ? resp.blob() : null; })
+        .then(function(blob){
+          if (!blob) return;
+          return new Promise(function(resolve){
+            var reader = new FileReader();
+            reader.onload = function(){
+              if (typeof reader.result === 'string') img.setAttribute('src', reader.result);
+              resolve();
+            };
+            reader.onerror = function(){ resolve(); };
+            reader.readAsDataURL(blob);
+          });
+        })
+        .catch(function(){ /* leave src as-is; user sees broken-image icon */ });
+    }));
+  }
   function syncElementState(source, target){
     var tag = source.tagName ? source.tagName.toLowerCase() : '';
     if (tag === 'img' && source.currentSrc) target.setAttribute('src', source.currentSrc);
@@ -647,6 +690,46 @@ function injectSnapshotBridge(doc: string): string {
       } catch (_) {}
     }
   }
+  // cloneNode(true) does not copy ::before / ::after pseudo-elements, so any
+  // decoration drawn through them (dividers, ring outlines, badge dots, …)
+  // disappears in the snapshot. Walk both trees in lockstep and insert a
+  // real span for each pseudo whose computed content is meaningful,
+  // applying the pseudo computed style inline so it positions itself the
+  // same way as the original. Pseudos whose content resolves to none or
+  // normal are skipped — those do not render anything either.
+  function unquoteContent(value){
+    if (!value) return '';
+    var first = value.charAt(0);
+    var last = value.charAt(value.length - 1);
+    if ((first === '"' || first === "'") && first === last) return value.slice(1, -1);
+    return value;
+  }
+  function flattenPseudo(source, target, pseudo){
+    if (!source || source.nodeType !== 1 || !target || target.nodeType !== 1) return;
+    var cs;
+    try { cs = window.getComputedStyle(source, pseudo); }
+    catch (_) { return; }
+    if (!cs) return;
+    var content = cs.getPropertyValue('content');
+    if (!content || content === 'none' || content === 'normal') return;
+    var span = document.createElement('span');
+    span.setAttribute('data-od-pseudo', pseudo === ':before' ? 'before' : 'after');
+    var style = '';
+    for (var i = 0; i < cs.length; i++){
+      var prop = cs[i];
+      // Skip the content property — it is a generated-content directive
+      // that does not apply to real elements and serializing it back as
+      // inline style can confuse some parsers. The text goes via textContent.
+      if (prop === 'content') continue;
+      style += prop + ':' + cs.getPropertyValue(prop) + ';';
+    }
+    // Most decorative pseudos use content "" (empty string) — the empty
+    // textContent is fine; their visual is delivered by background/border.
+    span.setAttribute('style', style);
+    span.textContent = unquoteContent(content);
+    if (pseudo === ':before') target.insertBefore(span, target.firstChild);
+    else target.appendChild(span);
+  }
   function inlineSnapshotStyles(originalRoot, cloneRoot){
     copyComputedStyle(originalRoot, cloneRoot);
     syncElementState(originalRoot, cloneRoot);
@@ -656,6 +739,16 @@ function injectSnapshotBridge(doc: string): string {
     for (var i = 0; i < count; i++){
       copyComputedStyle(originals[i], clones[i]);
       syncElementState(originals[i], clones[i]);
+    }
+    // Pseudo flattening runs AFTER style/state sync — flattening inserts
+    // real span children, which would shift the originals[i]/clones[i] index
+    // alignment if done earlier. Walk the original snapshot of pairs we
+    // captured above (queryAll happens before any insertion).
+    flattenPseudo(originalRoot, cloneRoot, ':before');
+    flattenPseudo(originalRoot, cloneRoot, ':after');
+    for (var j = 0; j < count; j++){
+      flattenPseudo(originals[j], clones[j], ':before');
+      flattenPseudo(originals[j], clones[j], ':after');
     }
     var scripts = cloneRoot.querySelectorAll('script');
     for (var s = scripts.length - 1; s >= 0; s--) scripts[s].remove();
@@ -778,43 +871,49 @@ function injectSnapshotBridge(doc: string): string {
       inlineSnapshotStyles(document.documentElement, clone);
       pruneHiddenSnapshotNodes(document.documentElement, clone);
       var scroll = full ? { x: 0, y: 0 } : scrollOffset();
-      var cloneBody = clone.querySelector('body');
-      var rootStyle = clone.getAttribute('style') || '';
-      var bodyStyle = cloneBody ? cloneBody.getAttribute('style') || '' : '';
-      var bodyContent = cloneBody ? cloneBody.innerHTML : clone.innerHTML;
-      var wrapperStyle = rootStyle + bodyStyle +
-        'margin:0;position:relative;left:' + (-scroll.x) + 'px;top:' + (-scroll.y) + 'px;' +
-        'width:' + docW + 'px;height:' + docH + 'px;overflow:visible;';
-      var html = '<div xmlns="http://www.w3.org/1999/xhtml" style="' + escapeAttribute(wrapperStyle) + '">' + bodyContent + '</div>';
-      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + capW + '" height="' + capH + '" viewBox="0 0 ' + capW + ' ' + capH + '">' +
-        '<foreignObject x="0" y="0" width="' + docW + '" height="' + docH + '">' +
-        html +
-        '</foreignObject></svg>';
-      var img = new Image();
-      img.onload = function(){
-        try {
-          var canvas = document.createElement('canvas');
-          canvas.width = Math.max(1, Math.floor(capW * dpr));
-          canvas.height = Math.max(1, Math.floor(capH * dpr));
-          var ctx = canvas.getContext('2d');
-          if (!ctx) throw new Error('no 2d context');
-          ctx.scale(dpr, dpr);
-          // Opaque base so a transparent (un-painted) raster never flattens to
-          // pure black in clipboards / PNG viewers.
-          ctx.fillStyle = bgColor;
-          ctx.fillRect(0, 0, capW, capH);
-          ctx.drawImage(img, 0, 0, capW, capH);
-          if (canvasLooksBlank(ctx, canvas.width, canvas.height)) {
-            reject(new Error('empty-render'));
-            return;
+      // Inline images BEFORE reading the clone's markup — fetch each <img> to a
+      // data: URL and splice it into the clone in place, so the bytes travel
+      // inside the SVG instead of being chased as a foreign sub-resource the
+      // sandboxed iframe cannot fetch.
+      inlineImagesAsDataUrls(clone).then(function(){
+        var cloneBody = clone.querySelector('body');
+        var rootStyle = clone.getAttribute('style') || '';
+        var bodyStyle = cloneBody ? cloneBody.getAttribute('style') || '' : '';
+        var bodyContent = cloneBody ? cloneBody.innerHTML : clone.innerHTML;
+        var wrapperStyle = rootStyle + bodyStyle +
+          'margin:0;position:relative;left:' + (-scroll.x) + 'px;top:' + (-scroll.y) + 'px;' +
+          'width:' + docW + 'px;height:' + docH + 'px;overflow:visible;';
+        var html = '<div xmlns="http://www.w3.org/1999/xhtml" style="' + escapeAttribute(wrapperStyle) + '">' + bodyContent + '</div>';
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + capW + '" height="' + capH + '" viewBox="0 0 ' + capW + ' ' + capH + '">' +
+          '<foreignObject x="0" y="0" width="' + docW + '" height="' + docH + '">' +
+          html +
+          '</foreignObject></svg>';
+        var img = new Image();
+        img.onload = function(){
+          try {
+            var canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.floor(capW * dpr));
+            canvas.height = Math.max(1, Math.floor(capH * dpr));
+            var ctx = canvas.getContext('2d');
+            if (!ctx) throw new Error('no 2d context');
+            ctx.scale(dpr, dpr);
+            // Opaque base so a transparent (un-painted) raster never flattens to
+            // pure black in clipboards / PNG viewers.
+            ctx.fillStyle = bgColor;
+            ctx.fillRect(0, 0, capW, capH);
+            ctx.drawImage(img, 0, 0, capW, capH);
+            if (canvasLooksBlank(ctx, canvas.width, canvas.height)) {
+              reject(new Error('empty-render'));
+              return;
+            }
+            resolve({ dataUrl: canvas.toDataURL('image/png'), w: canvas.width, h: canvas.height });
+          } catch (err) {
+            reject(err instanceof Error ? err : new Error(String(err && err.message || err)));
           }
-          resolve({ dataUrl: canvas.toDataURL('image/png'), w: canvas.width, h: canvas.height });
-        } catch (err) {
-          reject(err instanceof Error ? err : new Error(String(err && err.message || err)));
-        }
-      };
-      img.onerror = function(){ reject(new Error('snapshot image failed')); };
-      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        };
+        img.onerror = function(){ reject(new Error('snapshot image failed')); };
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+      });
     });
   }
   // Exposed so the export-capture bridge (same document) can reuse this renderer.

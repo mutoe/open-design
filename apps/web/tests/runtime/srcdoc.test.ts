@@ -429,6 +429,25 @@ describe('buildSrcdoc', () => {
     );
   });
 
+  it('snapshot bridge inlines <img> bitmaps and flattens ::before/::after pseudos', () => {
+    const srcdoc = buildSrcdoc('<main>Visual decoration</main>');
+
+    // SVG foreignObject can't fetch sub-resources, AND the sandbox iframe's
+    // null Origin would taint any drawImage(canvas) attempt — so the bridge
+    // fetches the bytes directly (daemon CORS allows null origin) and
+    // FileReader-encodes them as a data URL before serializing.
+    expect(srcdoc).toContain('inlineImagesAsDataUrls');
+    expect(srcdoc).toContain('readAsDataURL');
+    expect(srcdoc).toContain("credentials: 'same-origin'");
+    // cloneNode(true) skips ::before/::after, so any decoration drawn via
+    // pseudo-elements (capsule dividers, ring outlines, badge dots) needs
+    // to be flattened into real <span> children before serializing.
+    expect(srcdoc).toContain('flattenPseudo');
+    expect(srcdoc).toContain('data-od-pseudo');
+    expect(srcdoc).toContain("':before'");
+    expect(srcdoc).toContain("':after'");
+  });
+
   it('snapshot bridge branches on mode for viewport vs full-page captures', () => {
     const srcdoc = buildSrcdoc('<main>Long page</main>');
 
