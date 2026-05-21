@@ -399,24 +399,44 @@ export function exportAsMd(source: string, title: string): void {
 // Image screenshot export
 // ---------------------------------------------------------------------------
 
-/**
- * Request a PNG screenshot of the current viewport from the snapshot bridge
- * injected into a srcdoc preview iframe. Returns null if the bridge is not
- * present (e.g. URL-load mode) or the capture times out.
- */
-export type PreviewSnapshot = { dataUrl: string; w: number; h: number };
+export type PreviewSnapshotMode = 'viewport' | 'full';
 
-export type PreviewSnapshotOptions = { full?: boolean };
+export interface PreviewSnapshotOptions {
+  /**
+   * `'viewport'` (default) captures only what is currently scrolled into
+   * view — used by the comment/draw overlay which composites strokes in
+   * viewport coordinates and would otherwise misalign over a longer canvas.
+   * `'full'` captures the entire scrollable page (the HTML canvas's
+   * `scrollWidth`/`scrollHeight`) without any scroll offset — used by the
+   * "Export as image" share menu so users get the whole artifact, not just
+   * what happens to be on screen.
+   */
+  mode?: PreviewSnapshotMode;
+  /** Capture timeout in milliseconds. Defaults to 2.5s. Pass a larger value
+   *  when capturing very tall full-page snapshots that need to wait for
+   *  off-screen lazy images to fetch. */
+  timeout?: number;
+}
+
+export type PreviewSnapshot = { dataUrl: string; w: number; h: number };
 
 export type PreviewSnapshotResult =
   | { ok: true; snapshot: PreviewSnapshot }
   | { ok: false; reason: 'loading' | 'post-message-error' | 'render-error' | 'timeout'; error?: string };
 
+/**
+ * Request a PNG screenshot from the snapshot bridge injected into a srcdoc
+ * preview iframe. Resolves with `{ ok: false }` if the bridge is not present
+ * (e.g. URL-load mode) or the capture times out.
+ */
 export function requestPreviewSnapshotResult(
   iframe: HTMLIFrameElement,
-  timeout = 8000,
   options: PreviewSnapshotOptions = {},
 ): Promise<PreviewSnapshotResult> {
+  const mode: PreviewSnapshotMode = options.mode ?? 'viewport';
+  // Full-page captures of long-image artifacts can take noticeably longer
+  // (large SVG serialize + canvas draw + PNG encode), so bump the default.
+  const timeout = options.timeout ?? (mode === 'full' ? 15000 : 8000);
   const win = iframe.contentWindow;
   if (!win) return Promise.resolve({ ok: false, reason: 'loading' });
   const id = `snap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -441,7 +461,7 @@ export function requestPreviewSnapshotResult(
     }
     window.addEventListener('message', onMsg);
     try {
-      win.postMessage({ type: 'od:snapshot', id, ...(options.full ? { full: true } : {}) }, '*');
+      win.postMessage({ type: 'od:snapshot', id, mode }, '*');
     } catch {
       done = true;
       window.removeEventListener('message', onMsg);
@@ -459,10 +479,9 @@ export function requestPreviewSnapshotResult(
 
 export async function requestPreviewSnapshot(
   iframe: HTMLIFrameElement,
-  timeout = 8000,
   options: PreviewSnapshotOptions = {},
 ): Promise<PreviewSnapshot | null> {
-  const result = await requestPreviewSnapshotResult(iframe, timeout, options);
+  const result = await requestPreviewSnapshotResult(iframe, options);
   return result.ok ? result.snapshot : null;
 }
 

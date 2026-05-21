@@ -686,8 +686,18 @@ function injectSnapshotBridge(doc: string): string {
       if (removals[r].parentNode) removals[r].parentNode.removeChild(removals[r]);
     }
   }
-  function waitForImages(){
+  // Some artifacts use loading="lazy" on imagery below the fold; in 'full'
+  // snapshot mode we need those rasterized too, so flip them eager before
+  // awaiting load. We don't restore the attribute — the host rebuilds the
+  // iframe on srcDoc changes, so any mutation here is scoped to a transient
+  // capture cycle.
+  function waitForImages(mode){
     var imgs = Array.prototype.slice.call(document.images || []);
+    if (mode === 'full') {
+      for (var k = 0; k < imgs.length; k++) {
+        try { imgs[k].loading = 'eager'; } catch (_) {}
+      }
+    }
     return Promise.all(imgs.map(function(img){
       if (img.complete) return Promise.resolve();
       return new Promise(function(resolve){
@@ -734,6 +744,18 @@ function injectSnapshotBridge(doc: string): string {
       return samples > 8;
     } catch (_) { return false; }
   }
+  // Chrome's 2D canvas tops out around 16384 px per dimension (and ~268M
+  // pixels total). A 1920-wide page at dpr=2 going into full mode can
+  // easily blow past that, so clamp the effective scale instead of letting
+  // toDataURL throw or silently render blank. The clamp is per-dimension,
+  // so very tall pages still get the full height — just at sub-DPR detail.
+  var MAX_CANVAS_DIM = 16384;
+  function clampDpr(w, h, dpr){
+    var s = dpr;
+    if (w * s > MAX_CANVAS_DIM) s = MAX_CANVAS_DIM / w;
+    if (h * s > MAX_CANVAS_DIM) s = MAX_CANVAS_DIM / h;
+    return Math.max(0.5, Math.min(dpr, s));
+  }
   // Rasterize the current view (or the whole document, when opts.full) via an
   // SVG <foreignObject>. Returns a Promise so it can be reused by both the
   // od:snapshot message handler AND the export-capture bridge (image export /
@@ -744,13 +766,13 @@ function injectSnapshotBridge(doc: string): string {
     return new Promise(function(resolve, reject){
       var w = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
       var h = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
-      var dpr = window.devicePixelRatio || 1;
       var bgColor = snapshotBackgroundColor();
       var docW = Math.max(w, document.documentElement.scrollWidth || 0, document.body ? document.body.scrollWidth : 0);
       var docH = Math.max(h, document.documentElement.scrollHeight || 0, document.body ? document.body.scrollHeight : 0);
       var full = !!opts.full;
       var capW = full ? docW : w;
       var capH = full ? docH : h;
+      var dpr = clampDpr(capW, capH, window.devicePixelRatio || 1);
       var clone = document.documentElement.cloneNode(true);
       clone.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
       inlineSnapshotStyles(document.documentElement, clone);
@@ -797,12 +819,15 @@ function injectSnapshotBridge(doc: string): string {
   }
   // Exposed so the export-capture bridge (same document) can reuse this renderer.
   window.__odCaptureSnapshot = function(opts){
-    return waitForImages().then(function(){ return captureSnapshot(opts || {}); });
+    var mode = opts && opts.full ? 'full' : 'viewport';
+    return waitForImages(mode).then(function(){ return captureSnapshot(opts || {}); });
   };
   window.addEventListener('message', function(ev){
     var data = ev && ev.data;
     if (!data || data.type !== 'od:snapshot' || !data.id) return;
-    window.__odCaptureSnapshot({ full: !!data.full }).then(function(res){
+    // Accept both wire shapes: upstream posts { full:boolean }, the local
+    // exports orchestrator posts { mode:'full'|'viewport' }.
+    window.__odCaptureSnapshot({ full: !!data.full || data.mode === 'full' }).then(function(res){
       window.parent.postMessage({ type: 'od:snapshot:result', id: String(data.id), dataUrl: res.dataUrl, w: res.w, h: res.h }, '*');
     }, function(err){
       window.parent.postMessage({ type: 'od:snapshot:result', id: String(data.id), error: String(err && err.message || err) }, '*');

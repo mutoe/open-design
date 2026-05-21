@@ -876,7 +876,7 @@ export function PreviewDrawOverlay({
     // the user submits, so retry with growing timeouts before giving up.
     const timeouts = [1500, 3000, 6000];
     for (const timeout of timeouts) {
-      const snapshot = await requestPreviewSnapshot(iframe, timeout);
+      const snapshot = await requestPreviewSnapshot(iframe, { timeout });
       if (snapshot) return snapshot;
     }
     return null;

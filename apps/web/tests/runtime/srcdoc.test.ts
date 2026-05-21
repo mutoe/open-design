@@ -429,6 +429,21 @@ describe('buildSrcdoc', () => {
     );
   });
 
+  it('snapshot bridge branches on mode for viewport vs full-page captures', () => {
+    const srcdoc = buildSrcdoc('<main>Long page</main>');
+
+    // The mode field is parsed off the incoming message and gates which
+    // dimensions feed the SVG/canvas (viewport vs scrollWidth/Height).
+    expect(srcdoc).toContain("data.mode === 'full'");
+    // Full mode must clamp dpr so very tall pages don't blow past the
+    // browser's canvas size cap.
+    expect(srcdoc).toContain('MAX_CANVAS_DIM');
+    // Lazy-loaded images below the fold are flipped to eager before we
+    // wait for their load events; without this, full-mode captures of
+    // long pages would render blank placeholders.
+    expect(srcdoc).toContain("loading = 'eager'");
+  });
+
   it('only uses directly mutable slide conventions for setActive support', () => {
     const srcdoc = buildSrcdoc(
       '<section class="slide">One</section><section class="slide">Two</section>',

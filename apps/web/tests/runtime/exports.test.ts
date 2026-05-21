@@ -1509,7 +1509,9 @@ describe('requestPreviewSnapshot', () => {
     const promise = requestPreviewSnapshot(iframe);
 
     expect(postMessageMock).toHaveBeenCalledOnce();
-    const { id } = postMessageMock.mock.calls[0]![0] as { type: string; id: string };
+    const call = postMessageMock.mock.calls[0]![0] as { type: string; id: string; mode: string };
+    expect(call.mode).toBe('viewport');
+    const { id } = call;
 
     // Simulate the bridge responding — source must match iframe.contentWindow
     window.dispatchEvent(
@@ -1525,11 +1527,11 @@ describe('requestPreviewSnapshot', () => {
     const contentWindow = { postMessage: postMessageMock };
     const iframe = { contentWindow } as unknown as HTMLIFrameElement;
 
-    const promise = requestPreviewSnapshot(iframe, 100, { full: true });
+    const promise = requestPreviewSnapshot(iframe, { mode: 'full', timeout: 100 });
 
     expect(postMessageMock).toHaveBeenCalledOnce();
-    const message = postMessageMock.mock.calls[0]![0] as { type: string; id: string; full?: boolean };
-    expect(message).toMatchObject({ type: 'od:snapshot', full: true });
+    const message = postMessageMock.mock.calls[0]![0] as { type: string; id: string; mode?: string };
+    expect(message).toMatchObject({ type: 'od:snapshot', mode: 'full' });
 
     window.dispatchEvent(
       { type: 'message', source: contentWindow, data: { type: 'od:snapshot:result', id: message.id, dataUrl: 'data:image/png;base64,abc', w: 100, h: 200 } } as unknown as Event,
@@ -1561,7 +1563,7 @@ describe('requestPreviewSnapshot', () => {
       contentWindow: { postMessage: vi.fn() },
     } as unknown as HTMLIFrameElement;
 
-    const promise = requestPreviewSnapshot(iframe, 100);
+    const promise = requestPreviewSnapshot(iframe, { timeout: 100 });
     vi.advanceTimersByTime(150);
 
     const result = await promise;
@@ -1575,7 +1577,7 @@ describe('requestPreviewSnapshot', () => {
     const contentWindow = { postMessage: postMessageMock };
     const iframe = { contentWindow } as unknown as HTMLIFrameElement;
 
-    const promise = requestPreviewSnapshot(iframe, 100);
+    const promise = requestPreviewSnapshot(iframe, { timeout: 100 });
 
     // Correct source but wrong id — should be ignored
     window.dispatchEvent(
@@ -1588,13 +1590,26 @@ describe('requestPreviewSnapshot', () => {
     vi.useRealTimers();
   });
 
+  it('forwards mode: "full" to the bridge for whole-page exports', async () => {
+    const postMessageMock = vi.fn();
+    const contentWindow = { postMessage: postMessageMock };
+    const iframe = { contentWindow } as unknown as HTMLIFrameElement;
+
+    void requestPreviewSnapshot(iframe, { mode: 'full' });
+
+    expect(postMessageMock).toHaveBeenCalledOnce();
+    const call = postMessageMock.mock.calls[0]![0] as { type: string; mode: string };
+    expect(call.type).toBe('od:snapshot');
+    expect(call.mode).toBe('full');
+  });
+
   it('ignores messages from a different source window', async () => {
     vi.useFakeTimers();
     const postMessageMock = vi.fn();
     const contentWindow = { postMessage: postMessageMock };
     const iframe = { contentWindow } as unknown as HTMLIFrameElement;
 
-    const promise = requestPreviewSnapshot(iframe, 100);
+    const promise = requestPreviewSnapshot(iframe, { timeout: 100 });
     const { id } = postMessageMock.mock.calls[0]![0] as { type: string; id: string };
 
     // Correct id but wrong source — should be ignored

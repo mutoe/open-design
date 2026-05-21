@@ -173,6 +173,7 @@ import {
   sourceLooksLikeNavigableDeck,
   type ExportProgress,
   type ImageExportFormat,
+  type PreviewSnapshotOptions,
 } from '../runtime/exports';
 import { fetchAppVersionInfo } from '../providers/registry';
 import { copyToClipboard } from '../lib/copy-to-clipboard';
@@ -1730,11 +1731,11 @@ function temporarilyExposeIframeForSnapshot(iframe: HTMLIFrameElement): () => vo
 
 async function requestPreviewSnapshotWithRetry(
   iframe: HTMLIFrameElement,
-  options?: { full?: boolean },
+  options: PreviewSnapshotOptions = {},
 ): Promise<Awaited<ReturnType<typeof requestPreviewSnapshot>>> {
   const timeouts = [1500, 3000, 6000];
   for (const timeout of timeouts) {
-    const snapshot = await requestPreviewSnapshot(iframe, timeout, options);
+    const snapshot = await requestPreviewSnapshot(iframe, { ...options, timeout });
     if (snapshot) return snapshot;
     await waitForAnimationFrame();
   }
@@ -3870,13 +3871,13 @@ function FileVersionManagerModal({
     }
   }
 
-  async function captureVersionPreviewSnapshot(options?: { full?: boolean }) {
+  async function captureVersionPreviewSnapshot(options?: PreviewSnapshotOptions) {
     const iframe = versionPreviewIframeRef.current;
     if (!iframe) return null;
     await waitForIframeLoadOrTimeout(iframe, 250);
     await waitForAnimationFrame();
     await waitForAnimationFrame();
-    if (options?.full) return requestPreviewSnapshotWithRetry(iframe, options);
+    if (options?.mode === 'full') return requestPreviewSnapshotWithRetry(iframe, options);
     const hostSnapshot = await captureHostIframeSnapshot(iframe);
     if (hostSnapshot) return hostSnapshot;
     return requestPreviewSnapshotWithRetry(iframe, options);
@@ -3910,7 +3911,7 @@ function FileVersionManagerModal({
       return;
     }
     await runVersionExport(version, async (content, title) => {
-      const snapshot = await captureVersionPreviewSnapshot({ full: true });
+      const snapshot = await captureVersionPreviewSnapshot({ mode: 'full' });
       if (!snapshot) throw new Error(t('fileViewer.exportFailed'));
       await exportSnapshotAsPdf(snapshot, title);
     });
@@ -3918,7 +3919,7 @@ function FileVersionManagerModal({
 
   async function exportVersionImage(version: ProjectFileVersion, format: ImageExportFormat) {
     await runVersionExport(version, async (content, title) => {
-      const snapshot = await captureVersionPreviewSnapshot({ full: true });
+      const snapshot = await captureVersionPreviewSnapshot({ mode: 'full' });
       if (!snapshot) throw new Error(t('fileViewer.exportImageFailed'));
       const blob = await imageDataUrlToBlob(snapshot.dataUrl, format);
       if (blob.size <= 0) throw new Error(t('fileViewer.exportImageFailed'));
@@ -15059,6 +15060,8 @@ function HtmlViewer({
     const hostSnapshot = await captureHostIframeSnapshot(visibleIframe);
     if (hostSnapshot) return hostSnapshot;
 
+    // "Export as image" should yield the whole HTML canvas the user designed,
+    // not just the scrolled-into-view region, so capture in full-page mode.
     if (!useUrlLoadPreview) {
       const activeIframe = srcDocPreviewIframeRef.current ?? iframeRef.current;
       if (!activeIframe) {
@@ -15067,14 +15070,14 @@ function HtmlViewer({
       }
       await waitForIframeLoadOrTimeout(activeIframe, 250);
       await waitForAnimationFrame();
-      return requestPreviewSnapshotWithRetry(activeIframe);
+      return requestPreviewSnapshotWithRetry(activeIframe, { mode: 'full' });
     }
 
     const urlIframe = iframeRef.current ?? urlPreviewIframeRef.current;
     if (urlIframe) {
       await waitForIframeLoadOrTimeout(urlIframe, 250);
       await waitForAnimationFrame();
-      const urlSnapshot = await requestPreviewSnapshotWithRetry(urlIframe);
+      const urlSnapshot = await requestPreviewSnapshotWithRetry(urlIframe, { mode: 'full' });
       if (urlSnapshot) return urlSnapshot;
     }
 
@@ -15085,7 +15088,7 @@ function HtmlViewer({
         captureFailureStageRef.current = 'NO_URL_IFRAME';
         return null;
       }
-      return requestPreviewSnapshotWithRetry(activeIframe);
+      return requestPreviewSnapshotWithRetry(activeIframe, { mode: 'full' });
     }
 
     if (useLazySrcDocTransport && !srcDocShellReady) {
@@ -15097,7 +15100,7 @@ function HtmlViewer({
     const restoreVisibility = temporarilyExposeIframeForSnapshot(srcDocIframe);
     try {
       await waitForAnimationFrame();
-      return requestPreviewSnapshotWithRetry(srcDocIframe);
+      return requestPreviewSnapshotWithRetry(srcDocIframe, { mode: 'full' });
     } finally {
       restoreVisibility();
     }
