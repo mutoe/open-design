@@ -926,11 +926,21 @@ function injectSnapshotBridge(doc: string): string {
     if (!data || data.type !== 'od:snapshot' || !data.id) return;
     // Accept both wire shapes: upstream posts { full:boolean }, the local
     // exports orchestrator posts { mode:'full'|'viewport' }.
-    window.__odCaptureSnapshot({ full: !!data.full || data.mode === 'full' }).then(function(res){
-      window.parent.postMessage({ type: 'od:snapshot:result', id: String(data.id), dataUrl: res.dataUrl, w: res.w, h: res.h }, '*');
-    }, function(err){
-      window.parent.postMessage({ type: 'od:snapshot:result', id: String(data.id), error: String(err && err.message || err) }, '*');
-    });
+    var full = !!data.full || data.mode === 'full';
+    var id = String(data.id);
+    // Catch every failure path so the host's pending Promise resolves to
+    // an error result instead of timing out on a silent throw: a rejection
+    // anywhere in the waitForImages/captureSnapshot chain, or a sync throw
+    // before the chain is even set up.
+    try {
+      window.__odCaptureSnapshot({ full: full }).then(function(res){
+        window.parent.postMessage({ type: 'od:snapshot:result', id: id, dataUrl: res.dataUrl, w: res.w, h: res.h }, '*');
+      }, function(err){
+        window.parent.postMessage({ type: 'od:snapshot:result', id: id, error: String(err && err.message || err) }, '*');
+      });
+    } catch (err) {
+      window.parent.postMessage({ type: 'od:snapshot:result', id: id, error: 'sync throw: ' + String(err && err.message || err) }, '*');
+    }
   });
 })();</script>`;
   return injectBeforeBodyEnd(doc, script);

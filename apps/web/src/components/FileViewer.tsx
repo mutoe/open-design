@@ -147,6 +147,7 @@ import {
 } from '../providers/registry';
 import type { ProjectFilePreview } from '../providers/registry';
 import {
+  captureFullSnapshotInIsolatedFrame,
   downloadImageDataUrl,
   exportAsHtml,
   exportAsJsx,
@@ -15064,6 +15065,16 @@ function HtmlViewer({
     // not just the scrolled-into-view region, so capture in full-page mode.
     if (!useUrlLoadPreview) {
       const activeIframe = srcDocPreviewIframeRef.current ?? iframeRef.current;
+      // Capture in a FRESH isolated iframe rather than the live preview when
+      // we have the srcDoc markup: the live srcDoc iframe reuses one shell
+      // across document.open/write cycles, so an artifact whose classic-script
+      // top-level declarations survive document.open throws "Identifier 'X'
+      // has already been declared" on the second write and never reaches its
+      // snapshot bridge. A clean iframe owns its own JS realm. See
+      // captureFullSnapshotInIsolatedFrame.
+      if (srcDoc) {
+        return captureFullSnapshotInIsolatedFrame(srcDoc, activeIframe?.clientWidth || 1280);
+      }
       if (!activeIframe) {
         captureFailureStageRef.current = 'NO_SRCDOC_IFRAME';
         return null;
@@ -15106,6 +15117,7 @@ function HtmlViewer({
     }
   }, [
     activateSrcDocSnapshotTransport,
+    srcDoc,
     srcDocShellReady,
     useLazySrcDocTransport,
     useUrlLoadPreview,

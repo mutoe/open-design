@@ -457,7 +457,10 @@ export function requestPreviewSnapshotResult(
       done = true;
       window.removeEventListener('message', onMsg);
       if (d.dataUrl && d.w && d.h) resolve({ ok: true, snapshot: { dataUrl: d.dataUrl, w: d.w, h: d.h } });
-      else resolve({ ok: false, reason: 'render-error', error: d.error });
+      else {
+        if (d.error) console.warn('[requestPreviewSnapshot] bridge error:', d.error);
+        resolve({ ok: false, reason: 'render-error', error: d.error });
+      }
     }
     window.addEventListener('message', onMsg);
     try {
@@ -536,6 +539,57 @@ export async function captureHostIframeSnapshot(
     top: rect.top,
     width: rect.width,
     height: rect.height,
+  });
+}
+
+/**
+ * Take a full-page snapshot in a fresh, isolated iframe rather than reaching
+ * into the live preview iframe.
+ *
+ * Why a separate iframe: the live srcDoc iframe sits on top of a lazy
+ * transport that re-uses one shell across many `document.open/write/close`
+ * cycles. Classic-script top-level declarations (`class X {}`, `const Y = ...`)
+ * accumulate in the shell's global lexical environment and survive
+ * `document.open`, so the SECOND write of an artifact that defines custom
+ * elements throws `Identifier 'X' has already been declared` mid-parse — and
+ * the bridge `<script>` near the end of `<body>` is never reached. The live
+ * iframe ends up rendering (visually) but missing its snapshot bridge.
+ *
+ * Each iframe owns its own JS realm; mounting a fresh one for capture gives
+ * the artifact's scripts a clean slot to declare into. The frame is removed
+ * after the capture completes.
+ *
+ * `viewportWidth` matches the live preview width so any media-query-driven
+ * responsive layout renders identically. Height grows with the document's
+ * scrollHeight under `mode: 'full'`.
+ */
+export function captureFullSnapshotInIsolatedFrame(
+  srcDoc: string,
+  viewportWidth: number,
+): Promise<{ dataUrl: string; w: number; h: number } | null> {
+  return new Promise((resolve) => {
+    if (!srcDoc) { resolve(null); return; }
+    const frame = document.createElement('iframe');
+    frame.setAttribute('sandbox', 'allow-scripts allow-downloads');
+    frame.style.cssText = `position:fixed;left:-100000px;top:0;width:${Math.max(320, Math.round(viewportWidth))}px;height:800px;border:0;visibility:hidden;pointer-events:none;`;
+    frame.srcdoc = srcDoc;
+    let settled = false;
+    const cleanup = () => { try { frame.remove(); } catch (_) { /* ignore */ } };
+    const finish = (result: { dataUrl: string; w: number; h: number } | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    frame.addEventListener('load', () => {
+      // Give the bridge IIFE a tick to attach its message listener.
+      setTimeout(() => {
+        requestPreviewSnapshot(frame, { mode: 'full' }).then(finish).catch(() => finish(null));
+      }, 30);
+    }, { once: true });
+    // Hard ceiling so a stuck artifact can't leak the hidden iframe forever.
+    setTimeout(() => finish(null), 20000);
+    document.body.appendChild(frame);
   });
 }
 
