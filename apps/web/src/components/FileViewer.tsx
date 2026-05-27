@@ -189,6 +189,7 @@ import {
   canActivateSrcDocTransport,
   htmlHasAuthoredBase,
   PREVIEW_REDIRECT_LOOP_MESSAGE,
+  shouldRebuildSrcDocShell,
 } from '../runtime/srcdoc';
 import { DeckThumbnailRail, type DeckThumbnailViewport } from './DeckThumbnailRail';
 import { parseDeckThumbnails } from '../runtime/deck-thumbnail-parser';
@@ -11665,10 +11666,24 @@ function HtmlViewer({
     // Skip the remount path in Manual Edit, where the postMessage
     // activate carries the patched HTML and host-side scroll/slide
     // state intentionally stays put across the patch.
+    // Two independent reasons to force a fresh shell mount, both invalid under
+    // the persistent transport (that path navigates for real, so neither the
+    // onLoad gap nor the Window-reuse hazard below applies):
+    //
+    //  - Comment mode, per the note above.
+    //  - Any subsequent activation carrying NEW content. document.open() resets
+    //    the Document but not the Window, so the artifact's top-level `class` /
+    //    `let` declarations survive and re-declaring them throws SyntaxError.
+    //    That aborts the rest of the script, so IIFE hydration (theme switcher,
+    //    sidebar nav, …) silently never runs and the new DOM is interactively
+    //    dead. The host's scroll- and slide-restore pipeline rehydrates state
+    //    on the fresh load.
     if (
       !usesPersistentSrcDocTransport
-      && boardMode
-      && activatedSrcDocTransportHtmlRef.current !== null
+      && (
+        (boardMode && activatedSrcDocTransportHtmlRef.current !== null)
+        || shouldRebuildSrcDocShell(activationInputs)
+      )
     ) {
       activatedSrcDocTransportHtmlRef.current = null;
       setSrcDocTransportResetKey((key) => key + 1);
@@ -11694,13 +11709,19 @@ function HtmlViewer({
     usesPersistentSrcDocTransport,
   ]);
   const activateLoadedSrcDocTransport = useCallback((target: HTMLIFrameElement | null = srcDocPreviewIframeRef.current) => {
-    if (!canActivateSrcDocTransport({
+    const state = {
       srcDoc: srcDocActivationContent,
       useUrlLoadPreview: useUrlLoadPreview && !srcDocMaterialized,
       useLazySrcDocTransport,
       shellReady: true,
       activatedHtml: activatedSrcDocTransportHtmlRef.current,
-    })) return false;
+    };
+    if (!canActivateSrcDocTransport(state)) return false;
+    if (!usesPersistentSrcDocTransport && shouldRebuildSrcDocShell(state)) {
+      activatedSrcDocTransportHtmlRef.current = null;
+      setSrcDocTransportResetKey((key) => key + 1);
+      return true;
+    }
     const win = target?.contentWindow;
     if (!win) return false;
     win.postMessage({
@@ -11716,6 +11737,7 @@ function HtmlViewer({
     srcDocTransportGeneration,
     useLazySrcDocTransport,
     useUrlLoadPreview,
+    usesPersistentSrcDocTransport,
   ]);
   const activateSrcDocSnapshotTransport = useCallback((target: HTMLIFrameElement | null = srcDocPreviewIframeRef.current) => {
     if (!srcDocActivationContent) return false;
@@ -11766,6 +11788,10 @@ function HtmlViewer({
       activatedSrcDocTransportHtmlRef.current = null;
     }
     wasUrlLoadPreviewRef.current = false;
+    // Content-change remounts (including manual-edit toggle, which adds/removes
+    // the edit-bridge) are handled inside activateSrcDocTransport via
+    // shouldRebuildSrcDocShell; the dedicated effect below still owns the
+    // exit-edit edge.
     activateSrcDocTransport();
   }, [
     activateSrcDocTransport,
