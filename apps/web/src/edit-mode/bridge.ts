@@ -275,12 +275,67 @@ export function buildManualEditBridge(enabled: boolean): string {
     if (!text) return false;
     return el.children.length === 0;
   }
+  function isPrimaryTarget(el){
+    if (!el || !el.hasAttribute) return false;
+    if (el.hasAttribute('data-od-id') || el.hasAttribute('data-od-edit')) return true;
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    return tag === 'a' || tag === 'button';
+  }
+  var INLINE_TAGS = ['span','strong','em','b','i','u','small','mark','code','sub','sup','br','a'];
+  function hasOnlyTextOrBrChildren(el){
+    if (!el || !el.children) return true;
+    for (var i = 0; i < el.children.length; i++) {
+      var child = el.children[i];
+      var childTag = child.tagName ? child.tagName.toLowerCase() : '';
+      if (childTag !== 'br') return false;
+    }
+    return true;
+  }
+  function hasOnlyInlineChildren(el){
+    if (!el || !el.children) return true;
+    for (var i = 0; i < el.children.length; i++) {
+      var child = el.children[i];
+      var childTag = child.tagName ? child.tagName.toLowerCase() : '';
+      if (INLINE_TAGS.indexOf(childTag) < 0) return false;
+      if (child.children && child.children.length > 0 && !hasOnlyInlineChildren(child)) return false;
+    }
+    return true;
+  }
+  var RICH_KEEP_ATTRS = ['class','style','href','title','target','rel','alt'];
+  function sanitizeRichNodeInPlace(node){
+    var children = Array.prototype.slice.call(node.children);
+    for (var i = 0; i < children.length; i++) {
+      var child = children[i];
+      sanitizeRichNodeInPlace(child);
+      var tag = child.tagName ? child.tagName.toLowerCase() : '';
+      if (INLINE_TAGS.indexOf(tag) < 0) {
+        while (child.firstChild) node.insertBefore(child.firstChild, child);
+        node.removeChild(child);
+        continue;
+      }
+      var attrs = Array.prototype.slice.call(child.attributes);
+      for (var j = 0; j < attrs.length; j++) {
+        var name = attrs[j].name.toLowerCase();
+        if (RICH_KEEP_ATTRS.indexOf(name) < 0) child.removeAttribute(attrs[j].name);
+      }
+    }
+  }
+  function sanitizeRichInnerHtml(el){
+    var clone = el.cloneNode(true);
+    sanitizeRichNodeInPlace(clone);
+    return clone.innerHTML;
+  }
   function inferKind(el){
     var explicit = el.getAttribute('data-od-edit');
     if (explicit) return explicit;
     var tag = el.tagName ? el.tagName.toLowerCase() : '';
     if (tag === 'a') return 'link';
     if (tag === 'img') return 'image';
+    if (['section','main','nav','div','article','header','footer'].indexOf(tag) >= 0) {
+      if (hasOnlyTextOrBrChildren(el) && (el.textContent || '').trim().length > 0) return 'text';
+      if (hasOnlyInlineChildren(el) && (el.textContent || '').trim().length > 0) return 'rich';
+      return 'container';
+    }
     if (isTextLeaf(el)) return 'text';
     return 'container';
   }
@@ -754,13 +809,22 @@ export function buildManualEditBridge(enabled: boolean): string {
   function closestTarget(event){
     annotateBrandKitRuntimeTargets();
     var el = event.target;
+    var innermost = null;
+    var ancestorPrimary = null;
     while (el && el !== document.documentElement) {
       if (el !== document.body && el !== document.documentElement && isSourceMappable(el) && isDiscoveryTarget(el)) {
-        return el;
+        if (!innermost) innermost = el;
+        else if (!ancestorPrimary && isPrimaryTarget(el)) ancestorPrimary = el;
       }
       el = el.parentElement;
     }
-    return null;
+    if (!innermost) return null;
+    // When the innermost source-mappable element is itself a meaningful
+    // target (leaf text/link/image), don't let an ancestor with data-od-id
+    // or <a>/<button> hijack the selection.
+    var innermostKind = inferKind(innermost);
+    if (innermostKind === 'text' || innermostKind === 'link' || innermostKind === 'image' || innermostKind === 'rich') return innermost;
+    return ancestorPrimary || innermost;
   }
   function caretRangeFromClick(clickEvent){
     try {
@@ -815,23 +879,42 @@ export function buildManualEditBridge(enabled: boolean): string {
     var el = session.el;
     el.removeAttribute('contenteditable');
     el.removeAttribute('data-od-editing');
+    if (session.savedWhiteSpace) el.style.whiteSpace = session.savedWhiteSpace;
+    else el.style.removeProperty('white-space');
     el.removeEventListener('keydown', session.onKey);
     if (guard) guard.editingEl = null;
-    var value = (el.textContent || '').trim();
-    var changed = value !== session.originalText.trim();
-    if (commit && changed) {
-      window.parent.postMessage({
-        type: 'od-edit-text-commit',
-        id: stableId(el),
-        value: value
-      }, '*');
-    } else if (!commit) {
-      el.textContent = session.originalText;
+    var changed = false;
+    if (session.rich) {
+      // Rich targets commit sanitized inline HTML so mixed content (strong/em/
+      // a/span) survives the round-trip instead of being flattened to text.
+      var html = sanitizeRichInnerHtml(el).trim();
+      changed = html !== session.originalValue;
+      if (commit && changed) {
+        window.parent.postMessage({
+          type: 'od-edit-html-commit',
+          id: stableId(el),
+          html: html
+        }, '*');
+      } else if (!commit) {
+        el.innerHTML = session.originalHtml;
+      }
+    } else {
+      var value = (el.innerText || el.textContent || '').trim();
+      changed = value !== session.originalValue;
+      if (commit && changed) {
+        window.parent.postMessage({
+          type: 'od-edit-text-commit',
+          id: stableId(el),
+          value: value
+        }, '*');
+      } else if (!commit) {
+        el.innerHTML = session.originalHtml;
+      }
     }
     postTextSession(el, false, { committed: !!commit, changed: changed });
     return true;
   }
-  function makeEditable(el, clickEvent){
+  function makeEditable(el, clickEvent, rich){
     if (!el) return;
     if (activeTextEdit && activeTextEdit.el === el) {
       placeCaretFromClick(clickEvent, el);
@@ -839,15 +922,31 @@ export function buildManualEditBridge(enabled: boolean): string {
     }
     if (activeTextEdit) finishActiveTextEdit(true);
     if (el.getAttribute('contenteditable') === 'true') return;
-    var originalText = el.textContent || '';
+    var originalHtml = el.innerHTML;
+    var originalValue = rich
+      ? sanitizeRichInnerHtml(el).trim()
+      : (el.innerText || el.textContent || '').trim();
+    var multiline = hasOnlyTextOrBrChildren(el) && /<br\b/i.test(originalHtml);
+    var savedWhiteSpace = el.style.whiteSpace;
     clearSelectedTarget();
-    el.setAttribute('contenteditable', 'plaintext-only');
+    el.setAttribute('contenteditable', rich ? 'true' : 'plaintext-only');
     el.setAttribute('data-od-editing', 'true');
     if (guard) guard.editingEl = el;
+    el.style.whiteSpace = 'pre-wrap';
     try { el.focus(); } catch (e) {}
     placeCaretFromClick(clickEvent, el);
     function onKey(ev){
-      if (ev.key === 'Enter' && !ev.shiftKey) {
+      if (ev.key === 'Enter') {
+        if (ev.metaKey || ev.ctrlKey) {
+          ev.preventDefault();
+          finishActiveTextEdit(true);
+          return;
+        }
+        if (ev.shiftKey || multiline) {
+          ev.preventDefault();
+          try { document.execCommand('insertText', false, '\\n'); } catch (e2) {}
+          return;
+        }
         ev.preventDefault();
         finishActiveTextEdit(true);
       }
@@ -856,7 +955,7 @@ export function buildManualEditBridge(enabled: boolean): string {
         finishActiveTextEdit(false);
       }
     }
-    activeTextEdit = { el: el, originalText: originalText, onKey: onKey };
+    activeTextEdit = { el: el, originalHtml: originalHtml, originalValue: originalValue, rich: !!rich, savedWhiteSpace: savedWhiteSpace, onKey: onKey };
     el.addEventListener('keydown', onKey);
     postTextSession(el, true);
   }
@@ -1069,7 +1168,11 @@ export function buildManualEditBridge(enabled: boolean): string {
     window.parent.postMessage({ type: 'od-edit-select', target: selectedTarget }, '*');
     window.parent.postMessage({ type: 'od-edit-inspect-select', target: selectedTarget }, '*');
     if (kind === 'text' || kind === 'link') {
-      makeEditable(el, ev);
+      makeEditable(el, ev, false);
+      return;
+    }
+    if (kind === 'rich') {
+      makeEditable(el, ev, true);
       return;
     }
   }, true);

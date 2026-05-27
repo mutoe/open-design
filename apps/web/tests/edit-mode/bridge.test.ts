@@ -261,8 +261,6 @@ describe('manual edit bridge target normalization', () => {
     expect(bridge).toContain('targets.push(targetFrom(nodes[i], false))');
     expect(bridge).toContain('targetFrom(el, true)');
     expect(bridge).toContain('if (!isSourceMappable(nodes[i])) continue;');
-    expect(bridge).toContain('return el;');
-    expect(bridge).not.toContain('if (isPrimaryTarget(el)) return el;');
   });
 
   it('selects and announces ordinary HTML elements after srcdoc source-path annotation', () => {

@@ -12591,6 +12591,14 @@ function HtmlViewer({
         }
         return;
       }
+      if (data.type === 'od-edit-html-commit') {
+        void applyManualEdit({
+          id: String(data.id),
+          kind: 'set-inner-html',
+          html: String(data.html),
+        }, 'Edit content');
+        return;
+      }
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
@@ -15363,15 +15371,17 @@ function HtmlViewer({
       });
     };
     try {
-      if (imageExportFormat === 'png' && !context) {
-        // Prefer the desktop CDP render for PNG: Electron's captureBeyondViewport
-        // loads the artifact's real URL (matching the preview origin) and avoids
-        // the <img>-SVG rasterizer's pink-block / dropped-CJK-glyph defects
-        // (#136). On web (no desktop sidecar) the route 404s and
-        // exportProjectAsImage invokes the fallback below. CDP only emits PNG,
-        // so JPEG/WebP always use the browser path. Version exports (context
-        // set) carry their own HTML content, which the CDP path cannot see —
-        // it loads the live file URL — so they stay on the browser pipeline.
+      if (imageExportFormat === 'png' && !context && isOpenDesignHostAvailable()) {
+        // In the desktop app, prefer the CDP render for PNG: Electron's
+        // captureBeyondViewport loads the artifact's real URL (matching the
+        // preview origin) and avoids the <img>-SVG rasterizer's pink-block /
+        // dropped-CJK-glyph defects (#136). exportProjectAsImage falls back to
+        // the browser snapshot below if the desktop route is unavailable. CDP
+        // only emits PNG, so JPEG/WebP always use the browser path; on the web
+        // (no desktop host) we skip straight to the browser path too. Version
+        // exports (context set) carry their own HTML content, which the CDP
+        // path cannot see — it loads the live file URL — so they stay on the
+        // browser pipeline.
         const activeIframe = iframeRef.current;
         let width = activeIframe?.clientWidth || 1280;
         let height = 800;

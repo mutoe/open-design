@@ -128,14 +128,19 @@ export function applyManualEditPatch(source: string, patch: ManualEditPatch): Ma
   }
 
   if (patch.kind === 'set-text') {
-    if (hasElementChildren(el)) {
+    // Two independent escapes from the nested-markup refusal, checked in this
+    // order: an element whose children are all `<br>` is still flat multiline
+    // text (rewrite it whole, re-deriving the breaks); anything else with
+    // element children is editable only when exactly one descendant text node
+    // carries visible copy, in which case that node is overwritten in place.
+    if (hasElementChildren(el) && !hasOnlyBrChildren(el)) {
       const soleText = findSoleMeaningfulTextNode(el);
       if (!soleText) {
         return { ok: false, source, error: 'This element contains nested markup. Use the HTML tab instead.' };
       }
       soleText.nodeValue = patch.value;
     } else {
-      el.textContent = patch.value;
+      setTextPreservingLineBreaks(el, patch.value);
     }
   } else if (patch.kind === 'set-link') {
     if (hasElementChildren(el)) {
@@ -171,6 +176,8 @@ export function applyManualEditPatch(source: string, patch: ManualEditPatch): Ma
         error: 'error' in replaced ? replaced.error : 'Could not replace element HTML.',
       };
     }
+  } else if (patch.kind === 'set-inner-html') {
+    replaceInnerHtml(el, patch.html);
   } else if (patch.kind === 'remove-element') {
     if (!el.parentElement) {
       return { ok: false, source, error: 'Cannot remove the root element.' };
@@ -654,6 +661,24 @@ function findSoleMeaningfulTextNode(el: Element): Text | null {
   return ambiguous ? null : found;
 }
 
+function hasOnlyBrChildren(el: Element): boolean {
+  return Array.from(el.children).every((child) => child.tagName.toLowerCase() === 'br');
+}
+
+function setTextPreservingLineBreaks(el: Element, value: string): void {
+  if (!value.includes('\n')) {
+    el.textContent = value;
+    return;
+  }
+  const doc = el.ownerDocument;
+  while (el.firstChild) el.removeChild(el.firstChild);
+  const lines = value.split('\n');
+  lines.forEach((line, index) => {
+    if (index > 0) el.appendChild(doc.createElement('br'));
+    if (line) el.appendChild(doc.createTextNode(line));
+  });
+}
+
 function setInlineStyles(el: HTMLElement, styles: Partial<ManualEditStyles>): void {
   for (const [name, value] of Object.entries(styles)) {
     const cssName = camelToKebab(name);
@@ -669,6 +694,34 @@ function setAttributes(el: Element, attributes: Record<string, string>): void {
     if (value.trim() === '') el.removeAttribute(name);
     else el.setAttribute(name, value);
   }
+}
+
+const RICH_INLINE_TAGS = new Set(['span','strong','em','b','i','u','small','mark','code','sub','sup','br','a']);
+const RICH_KEEP_ATTRS = new Set(['class','style','href','title','target','rel','alt']);
+
+function sanitizeRichSubtree(node: Element | DocumentFragment): void {
+  const children = Array.from(node.children);
+  for (const child of children) {
+    sanitizeRichSubtree(child);
+    const tag = child.tagName.toLowerCase();
+    if (!RICH_INLINE_TAGS.has(tag)) {
+      while (child.firstChild) node.insertBefore(child.firstChild, child);
+      node.removeChild(child);
+      continue;
+    }
+    for (const attr of Array.from(child.attributes)) {
+      if (!RICH_KEEP_ATTRS.has(attr.name.toLowerCase())) child.removeAttribute(attr.name);
+    }
+  }
+}
+
+function replaceInnerHtml(el: Element, html: string): void {
+  const doc = el.ownerDocument as Document;
+  const template = doc.createElement('template') as HTMLTemplateElement;
+  template.innerHTML = html;
+  sanitizeRichSubtree(template.content);
+  while (el.firstChild) el.removeChild(el.firstChild);
+  el.appendChild(template.content);
 }
 
 function replaceOuterHtml(doc: Document, el: Element, html: string): { ok: true } | { ok: false; error: string } {
