@@ -2,6 +2,8 @@
 import type {
   DesktopExportArtifactInput,
   DesktopExportArtifactResult,
+  DesktopExportImageInput,
+  DesktopExportImageResult,
   DesktopExportPdfInput,
   DesktopExportPdfResult,
   DesktopRenderSlidesInput,
@@ -613,7 +615,7 @@ import { buildDocumentPreview } from './document-preview.js';
 import { lintArtifact, renderFindingsForAgent } from './lint-artifact.js';
 import { loadCraftSections, resolveCraftRequirements } from './craft.js';
 import { skillCwdAliasSegment, stageActiveSkill } from './cwd-aliases.js';
-import { buildDesktopArtifactExportInput, buildDesktopPdfExportInput } from './pdf-export.js';
+import { buildDesktopArtifactExportInput, buildDesktopImageExportInput, buildDesktopPdfExportInput } from './pdf-export.js';
 import { generateMedia } from './media/index.js';
 import { resolveHyperFramesCliPath } from './media/hyperframes-runtime.js';
 import { listElevenLabsVoiceOptions } from './integrations/elevenlabs-voices.js';
@@ -2803,6 +2805,7 @@ export function createSseResponse(
 export type DesktopPdfExporter = (input: DesktopExportPdfInput) => Promise<DesktopExportPdfResult>;
 export type DesktopSlideRenderer = (input: DesktopRenderSlidesInput) => Promise<DesktopRenderSlidesResult>;
 export type DesktopArtifactExporter = (input: DesktopExportArtifactInput) => Promise<DesktopExportArtifactResult>;
+export type DesktopImageExporter = (input: DesktopExportImageInput) => Promise<DesktopExportImageResult>;
 
 // Loosely typed shape — we only access `namespace`, `base`, `mode`, and
 // `source` from the runtime context when building the diagnostics export.
@@ -2817,6 +2820,7 @@ export interface DaemonRuntimeContext {
 
 export interface StartServerOptions {
   desktopArtifactExporter?: DesktopArtifactExporter | null;
+  desktopImageExporter?: DesktopImageExporter | null;
   desktopPdfExporter?: DesktopPdfExporter | null;
   desktopSlideRenderer?: DesktopSlideRenderer | null;
   host?: string;
@@ -2854,6 +2858,7 @@ export async function startServer({
   port = 7456,
   host = normalizeDaemonBindHost(process.env.OD_BIND_HOST),
   returnServer = false,
+  desktopImageExporter = null,
   desktopPdfExporter = null,
   desktopSlideRenderer = null,
   desktopArtifactExporter = null,
@@ -7992,8 +7997,10 @@ export async function startServer({
   const projectExportDeps = {
     createProjectArchiveStream,
     createBatchArchiveStream,
+    buildDesktopImageExportInput,
     buildDesktopPdfExportInput,
     buildDesktopArtifactExportInput,
+    desktopImageExporter,
     desktopPdfExporter,
     desktopSlideRenderer,
     desktopArtifactExporter,

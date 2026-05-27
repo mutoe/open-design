@@ -4,6 +4,7 @@ import type {
   DesktopExportArtifactFormat,
   DesktopExportArtifactImageFormat,
   DesktopExportArtifactInput,
+  DesktopExportImageInput,
   DesktopExportPdfInput,
 } from '@open-design/sidecar-proto';
 
@@ -79,6 +80,39 @@ export async function buildDesktopArtifactExportInput(
     ...(options.width ? { width: options.width } : {}),
     ...(options.height ? { height: options.height } : {}),
   };
+}
+
+export interface BuildDesktopImageExportInputOptions {
+  daemonUrl: string;
+  fileName: string;
+  height: number;
+  projectId: string;
+  projectsRoot: string;
+  title?: string;
+  width: number;
+}
+
+export async function buildDesktopImageExportInput(
+  options: BuildDesktopImageExportInputOptions,
+): Promise<DesktopExportImageInput> {
+  const file = await readProjectFile(options.projectsRoot, options.projectId, options.fileName);
+  const title = displayTitle(options.title, options.fileName);
+  return {
+    baseHref: rawBaseHref(options.daemonUrl, options.projectId, options.fileName),
+    defaultFilename: `${safeFilename(title, 'artifact')}.png`,
+    documentUrl: rawDocumentUrl(options.daemonUrl, options.projectId, options.fileName),
+    height: options.height,
+    html: file.buffer.toString('utf8'),
+    title,
+    width: options.width,
+  };
+}
+
+function rawDocumentUrl(daemonUrl: string, projectId: string, fileName: string): string {
+  const safeProjectId = encodeURIComponent(projectId);
+  const rawBase = `${daemonUrl.replace(/\/+$/, '')}/api/projects/${safeProjectId}/raw/`;
+  const segments = fileName.replace(/^\/+/, '').split('/').filter(Boolean).map((s) => encodeURIComponent(s)).join('/');
+  return `${rawBase}${segments}`;
 }
 
 function displayTitle(title: string | undefined, fileName: string): string {

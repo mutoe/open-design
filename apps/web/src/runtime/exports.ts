@@ -849,6 +849,48 @@ export function exportAsImage(dataUrl: string, title: string): void {
   }
 }
 
+export type ProjectImageCdpExportResult = 'desktop' | 'fallback';
+
+/**
+ * Try the desktop-backed PNG export first (opens a hidden Electron
+ * BrowserWindow sized to the artifact, navigates to its raw URL, and
+ * captures with `webContents.capturePage()`). Falls back to the browser
+ * SVG-foreignObject snapshot path if the desktop route returns 501 (not
+ * desktop runtime) or errors. The desktop route is the only one that
+ * faithfully rasterizes effects like backdrop-filter / certain absolute
+ * positioning + dark-hero combinations — Chrome's `<img src=svg>` secure
+ * rasterizer mangles those.
+ */
+export async function exportProjectAsImage(opts: {
+  fallbackImage: () => Promise<void> | void;
+  filePath: string;
+  height: number;
+  projectId: string;
+  title: string;
+  width: number;
+}): Promise<ProjectImageCdpExportResult> {
+  try {
+    const resp = await fetch(`/api/projects/${encodeURIComponent(opts.projectId)}/export/image-cdp`, {
+      body: JSON.stringify({
+        fileName: opts.filePath,
+        height: opts.height,
+        title: opts.title,
+        width: opts.width,
+      }),
+      headers: { 'content-type': 'application/json' },
+      method: 'POST',
+    });
+    if (!resp.ok) throw new Error(`desktop image export unavailable (${resp.status})`);
+    const body = await resp.json().catch(() => ({}));
+    if (body && body.ok === false) throw new Error(body.error || 'desktop image export failed');
+    return 'desktop';
+  } catch (err) {
+    console.warn('[exportProjectAsImage] falling back to browser snapshot:', err);
+    await opts.fallbackImage();
+    return 'fallback';
+  }
+}
+
 export type ProjectPdfExportResult = 'desktop' | 'fallback' | 'cancelled';
 
 export async function exportProjectAsPdf(opts: {

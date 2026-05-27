@@ -85,6 +85,7 @@ export const SIDECAR_MESSAGES = Object.freeze({
   CONSOLE: "console",
   EVAL: "eval",
   EXPORT_ARTIFACT: "export-artifact",
+  EXPORT_IMAGE: "export-image",
   EXPORT_PDF: "export-pdf",
   MINT_IMPORT_TOKEN: "mint-import-token",
   REGISTER_DESKTOP_AUTH: "register-desktop-auth",
@@ -348,6 +349,27 @@ export type DesktopExportArtifactResult = {
   path?: string;
 };
 
+export type DesktopExportImageInput = {
+  baseHref?: string;
+  defaultFilename: string;
+  // Optional full URL to load instead of decoding `html` as a data: URL.
+  // When set, the desktop renderer loads this URL directly, matching the
+  // same origin/font-resolution path as the web preview iframe. Falls
+  // back to the data: URL path when absent.
+  documentUrl?: string;
+  height: number;
+  html: string;
+  title: string;
+  width: number;
+};
+
+export type DesktopExportImageResult = {
+  canceled?: boolean;
+  error?: string;
+  ok: boolean;
+  path?: string;
+};
+
 export type DesktopUpdateCapabilitySet = {
   canApplyInPlace: boolean;
   canDownload: boolean;
@@ -518,6 +540,7 @@ export type DesktopClickMessage = { input: DesktopClickInput; type: typeof SIDEC
 export type DesktopExportPdfMessage = { input: DesktopExportPdfInput; type: typeof SIDECAR_MESSAGES.EXPORT_PDF };
 export type DesktopRenderSlidesMessage = { input: DesktopRenderSlidesInput; type: typeof SIDECAR_MESSAGES.RENDER_SLIDES };
 export type DesktopExportArtifactMessage = { input: DesktopExportArtifactInput; type: typeof SIDECAR_MESSAGES.EXPORT_ARTIFACT };
+export type DesktopExportImageMessage = { input: DesktopExportImageInput; type: typeof SIDECAR_MESSAGES.EXPORT_IMAGE };
 export type DesktopUpdateMessage = { input: DesktopUpdateInput; type: typeof SIDECAR_MESSAGES.UPDATE };
 
 // Sent by the desktop main process to the daemon over its sidecar IPC at
@@ -592,6 +615,7 @@ export type DesktopSidecarMessage =
   | DesktopExportPdfMessage
   | DesktopRenderSlidesMessage
   | DesktopExportArtifactMessage
+  | DesktopExportImageMessage
   | DesktopUpdateMessage;
 
 export type ShutdownResult = {
@@ -913,6 +937,27 @@ function normalizeDesktopExportArtifactInput(input: unknown): DesktopExportArtif
   };
 }
 
+function normalizePositiveInteger(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return value;
+}
+
+function normalizeDesktopExportImageInput(input: unknown): DesktopExportImageInput {
+  const value = assertObject(input, "desktop image export input");
+  assertKnownKeys(value, ["baseHref", "defaultFilename", "documentUrl", "height", "html", "title", "width"], "desktop image export input");
+  return {
+    ...(value.baseHref == null ? {} : { baseHref: normalizeNonEmptyString(value.baseHref, "desktop image export baseHref") }),
+    defaultFilename: normalizeNonEmptyString(value.defaultFilename, "desktop image export defaultFilename"),
+    ...(value.documentUrl == null ? {} : { documentUrl: normalizeNonEmptyString(value.documentUrl, "desktop image export documentUrl") }),
+    height: normalizePositiveInteger(value.height, "desktop image export height"),
+    html: normalizeNonEmptyString(value.html, "desktop image export html"),
+    title: normalizeNonEmptyString(value.title, "desktop image export title"),
+    width: normalizePositiveInteger(value.width, "desktop image export width"),
+  };
+}
+
 export function isDesktopUpdateAction(value: unknown): value is DesktopUpdateAction {
   return Object.values(DESKTOP_UPDATE_ACTIONS).includes(value as DesktopUpdateAction);
 }
@@ -1008,6 +1053,9 @@ export function normalizeDesktopSidecarMessage(input: unknown): DesktopSidecarMe
     case SIDECAR_MESSAGES.EXPORT_ARTIFACT:
       assertKnownKeys(value, ["input", "type"], "desktop sidecar message");
       return { input: normalizeDesktopExportArtifactInput(value.input), type };
+    case SIDECAR_MESSAGES.EXPORT_IMAGE:
+      assertKnownKeys(value, ["input", "type"], "desktop sidecar message");
+      return { input: normalizeDesktopExportImageInput(value.input), type };
     case SIDECAR_MESSAGES.UPDATE:
       assertKnownKeys(value, ["input", "type"], "desktop sidecar message");
       return { input: normalizeDesktopUpdateInput(value.input), type };

@@ -14,6 +14,7 @@ import {
   type DesktopClickInput,
   type DesktopEvalInput,
   type DesktopExportArtifactInput,
+  type DesktopExportImageInput,
   type DesktopExportPdfInput,
   type DesktopRenderSlidesInput,
   type DesktopScreenshotInput,
@@ -940,6 +941,8 @@ export async function runDesktopMain(
             return await activeDesktop.renderSlides(request.input as DesktopRenderSlidesInput);
           case SIDECAR_MESSAGES.EXPORT_ARTIFACT:
             return await activeDesktop.exportArtifact(request.input as DesktopExportArtifactInput);
+          case SIDECAR_MESSAGES.EXPORT_IMAGE:
+            return await activeDesktop.exportImage(request.input as DesktopExportImageInput);
           case SIDECAR_MESSAGES.UPDATE:
             return await updater.handle((request.input as DesktopUpdateInput).action);
         }

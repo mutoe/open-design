@@ -14,6 +14,8 @@ import {
   DESKTOP_UPDATE_STATES,
   type DesktopExportArtifactInput,
   type DesktopExportArtifactResult,
+  type DesktopExportImageInput,
+  type DesktopExportImageResult,
   type DesktopExportPdfInput,
   type DesktopExportPdfResult,
   type DesktopRenderSlidesInput,
@@ -34,7 +36,7 @@ import { renderDeckSlides } from "./deck-capture.js";
 import { openFirstPartyMailto } from "./mailto-open.js";
 import { openValidatedDirectory } from "./open-path.js";
 import { exportArtifact as exportArtifactFromHtml } from "./artifact-export.js";
-import { createElectronPdfTarget, exportPdfFromHtml, savePrintReadyDocumentAsPdf } from "./pdf-export.js";
+import { createElectronPdfTarget, exportImageFromHtml, exportPdfFromHtml, savePrintReadyDocumentAsPdf } from "./pdf-export.js";
 import { SPLASH_VIDEO_DATA_URL } from "./splash-video.js";
 import { RendererCrashLoopBreaker } from "./renderer-crash-loop.js";
 import type { PrintReadyPdfOptions } from "./pdf-export.js";
@@ -385,6 +387,7 @@ export type DesktopRuntime = {
   console(): DesktopConsoleResult;
   eval(input: DesktopEvalInput): Promise<DesktopEvalResult>;
   exportArtifact(input: DesktopExportArtifactInput): Promise<DesktopExportArtifactResult>;
+  exportImage(input: DesktopExportImageInput): Promise<DesktopExportImageResult>;
   exportPdf(input: DesktopExportPdfInput): Promise<DesktopExportPdfResult>;
   openUpdateDialog(request: OpenDesignHostUpdaterOpenDialogRequest): void;
   renderSlides(input: DesktopRenderSlidesInput): Promise<DesktopRenderSlidesResult>;
@@ -3065,6 +3068,9 @@ export async function createDesktopRuntime(options: DesktopRuntimeOptions): Prom
     },
     exportArtifact(input) {
       return exportArtifactFromHtml(input);
+    },
+    exportImage(input) {
+      return exportImageFromHtml(input);
     },
     exportPdf(input) {
       return exportPdfFromHtml(input);

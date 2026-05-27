@@ -638,28 +638,43 @@ function injectSrcdocTransportActivationBridge(doc: string, generation: string):
 
 function injectSnapshotBridge(doc: string): string {
   const script = `<script data-od-snapshot-bridge>(function(){
-  var SNAPSHOT_STYLE_PROPS = [
-    'display','position','box-sizing','width','height','min-width','max-width','min-height','max-height',
-    'margin','margin-top','margin-right','margin-bottom','margin-left',
-    'padding','padding-top','padding-right','padding-bottom','padding-left',
-    'border','border-top','border-right','border-bottom','border-left','border-radius',
-    'font','font-family','font-size','font-weight','font-style','line-height','letter-spacing',
-    'color','background-color','opacity','transform','transform-origin','overflow','overflow-x','overflow-y',
-    'white-space','text-align','vertical-align','object-fit','object-position',
-    'flex','flex-direction','flex-wrap','flex-grow','flex-shrink','flex-basis',
-    'grid','grid-template-columns','grid-template-rows','grid-column','grid-row',
-    'gap','row-gap','column-gap','align-items','align-content','align-self',
-    'justify-items','justify-content','justify-self','inset','top','right','bottom','left',
-    'z-index','box-shadow','text-shadow'
+  // Allowlist of computed-style properties to inline on each clone. Earlier
+  // versions copied every property getComputedStyle exposed (400+ longhands
+  // per element). At document scale that ballooned the serialized SVG past
+  // 20 MB and tripped a Chrome img-mode rasterization quirk: large SVG-via-img
+  // payloads would render unexpected color blocks beside translucent panels,
+  // even though the SVG was correct when opened directly. Trimming to a tight
+  // visual subset keeps the snapshot byte-equivalent for fidelity while
+  // staying inside whatever size threshold the secure rasterizer tolerates.
+  var STYLE_KEEP_LIST = [
+    'position','top','right','bottom','left','width','height',
+    'min-width','min-height','max-width','max-height',
+    'box-sizing','display',
+    'margin-top','margin-right','margin-bottom','margin-left',
+    'padding-top','padding-right','padding-bottom','padding-left',
+    'background-color','background-image','background-size','background-position','background-repeat','background-clip','background-origin','background-attachment',
+    'border-top-width','border-right-width','border-bottom-width','border-left-width',
+    'border-top-style','border-right-style','border-bottom-style','border-left-style',
+    'border-top-color','border-right-color','border-bottom-color','border-left-color',
+    'border-top-left-radius','border-top-right-radius','border-bottom-left-radius','border-bottom-right-radius',
+    'outline-width','outline-style','outline-color','outline-offset',
+    'box-shadow',
+    'color','font-family','font-size','font-weight','font-style','line-height','letter-spacing','text-align','text-decoration','text-transform','text-indent','white-space','word-break','word-wrap','overflow-wrap',
+    'opacity','visibility','overflow','overflow-x','overflow-y','clip-path','transform','transform-origin','z-index',
+    'flex','flex-grow','flex-shrink','flex-basis','flex-direction','flex-wrap','align-items','align-content','align-self','justify-content','justify-items','justify-self','gap','row-gap','column-gap','order',
+    'grid-template-columns','grid-template-rows','grid-template-areas','grid-auto-columns','grid-auto-rows','grid-auto-flow','grid-column-start','grid-column-end','grid-row-start','grid-row-end',
+    'object-fit','object-position','content','fill','stroke','stroke-width','stroke-dasharray','stroke-linecap','stroke-linejoin',
+    'list-style-type','list-style-position'
   ];
+  var STYLE_KEEP = (function(){ var m = {}; for (var i=0;i<STYLE_KEEP_LIST.length;i++) m[STYLE_KEEP_LIST[i]] = 1; return m; })();
   function copyComputedStyle(source, target){
     if (!source || !target || source.nodeType !== 1 || target.nodeType !== 1) return;
     var computed = window.getComputedStyle(source);
     var style = target.getAttribute('style') || '';
-    for (var i = 0; i < SNAPSHOT_STYLE_PROPS.length; i++){
-      var prop = SNAPSHOT_STYLE_PROPS[i];
-      var value = computed.getPropertyValue(prop);
-      if (value) style += prop + ':' + value + ';';
+    for (var i = 0; i < computed.length; i++){
+      var prop = computed[i];
+      if (!STYLE_KEEP[prop]) continue;
+      style += prop + ':' + computed.getPropertyValue(prop) + ';';
     }
     target.setAttribute('style', style);
   }
@@ -750,14 +765,38 @@ function injectSnapshotBridge(doc: string): string {
       // that does not apply to real elements and serializing it back as
       // inline style can confuse some parsers. The text goes via textContent.
       if (prop === 'content') continue;
+      if (!STYLE_KEEP[prop]) continue;
       style += prop + ':' + cs.getPropertyValue(prop) + ';';
     }
     // Most decorative pseudos use content "" (empty string) — the empty
     // textContent is fine; their visual is delivered by background/border.
     span.setAttribute('style', style);
     span.textContent = unquoteContent(content);
+    // Mark the host so the snapshot stylesheet can suppress the original
+    // pseudo. Without this, the cloned document still carries the original
+    // ::before / ::after rules from style tags and renders them on top of
+    // the flattened span — visible in exports as duplicated decorators,
+    // doubled outline rings on capsules, or repeated content like 06-month-month.
+    target.setAttribute(pseudo === ':before' ? 'data-od-pseudo-hide-before' : 'data-od-pseudo-hide-after', '1');
     if (pseudo === ':before') target.insertBefore(span, target.firstChild);
     else target.appendChild(span);
+  }
+  function injectPseudoSuppressor(cloneRoot){
+    // Suppress original ::before / ::after on flattened hosts. Inline style
+    // cannot target pseudo-elements, so this rule travels in a fresh style
+    // node prepended to head. !important plus setting every property the
+    // pseudo might use is the belt-and-suspenders: display none alone
+    // wins layout but a stubborn content paired with positioning can still
+    // paint borders/backgrounds in some engines, so we zero those too.
+    try {
+      var head = cloneRoot.querySelector && cloneRoot.querySelector('head');
+      if (!head) return;
+      var doc = cloneRoot.ownerDocument || document;
+      var style = doc.createElement('style');
+      style.setAttribute('data-od-pseudo-suppressor', '1');
+      style.textContent = '[data-od-pseudo-hide-before]::before,[data-od-pseudo-hide-after]::after{content:none!important;display:none!important;background:none!important;border:none!important;box-shadow:none!important;outline:none!important;width:0!important;height:0!important;}';
+      head.insertBefore(style, head.firstChild);
+    } catch (_) {}
   }
   function inlineSnapshotStyles(originalRoot, cloneRoot){
     copyComputedStyle(originalRoot, cloneRoot);
@@ -779,6 +818,7 @@ function injectSnapshotBridge(doc: string): string {
       flattenPseudo(originals[j], clones[j], ':before');
       flattenPseudo(originals[j], clones[j], ':after');
     }
+    injectPseudoSuppressor(cloneRoot);
     var scripts = cloneRoot.querySelectorAll('script');
     for (var s = scripts.length - 1; s >= 0; s--) scripts[s].remove();
     var links = cloneRoot.querySelectorAll('link[rel~="stylesheet"], link[rel~="preload"], link[rel~="preconnect"]');
@@ -900,6 +940,11 @@ function injectSnapshotBridge(doc: string): string {
       inlineSnapshotStyles(document.documentElement, clone);
       pruneHiddenSnapshotNodes(document.documentElement, clone);
       var scroll = full ? { x: 0, y: 0 } : scrollOffset();
+      // Full mode anchors the content at the document origin so the whole
+      // canvas is captured; viewport mode shifts it up/left by the current
+      // scroll so the visible region lands inside the SVG frame.
+      var offX = -scroll.x;
+      var offY = -scroll.y;
       // Inline images BEFORE reading the clone's markup — fetch each <img> to a
       // data: URL and splice it into the clone in place, so the bytes travel
       // inside the SVG instead of being chased as a foreign sub-resource the
@@ -910,38 +955,69 @@ function injectSnapshotBridge(doc: string): string {
         var bodyStyle = cloneBody ? cloneBody.getAttribute('style') || '' : '';
         var bodyContent = cloneBody ? cloneBody.innerHTML : clone.innerHTML;
         var wrapperStyle = rootStyle + bodyStyle +
-          'margin:0;position:relative;left:' + (-scroll.x) + 'px;top:' + (-scroll.y) + 'px;' +
+          'margin:0;position:relative;left:' + offX + 'px;top:' + offY + 'px;' +
           'width:' + docW + 'px;height:' + docH + 'px;overflow:visible;';
         var html = '<div xmlns="http://www.w3.org/1999/xhtml" style="' + escapeAttribute(wrapperStyle) + '">' + bodyContent + '</div>';
         var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + capW + '" height="' + capH + '" viewBox="0 0 ' + capW + ' ' + capH + '">' +
           '<foreignObject x="0" y="0" width="' + docW + '" height="' + docH + '">' +
           html +
           '</foreignObject></svg>';
-        var img = new Image();
-        img.onload = function(){
-          try {
-            var canvas = document.createElement('canvas');
-            canvas.width = Math.max(1, Math.floor(capW * dpr));
-            canvas.height = Math.max(1, Math.floor(capH * dpr));
-            var ctx = canvas.getContext('2d');
-            if (!ctx) throw new Error('no 2d context');
-            ctx.scale(dpr, dpr);
-            // Opaque base so a transparent (un-painted) raster never flattens to
-            // pure black in clipboards / PNG viewers.
-            ctx.fillStyle = bgColor;
-            ctx.fillRect(0, 0, capW, capH);
-            ctx.drawImage(img, 0, 0, capW, capH);
-            if (canvasLooksBlank(ctx, canvas.width, canvas.height)) {
-              reject(new Error('empty-render'));
-              return;
+        function paint(img){
+          var canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.floor(capW * dpr));
+          canvas.height = Math.max(1, Math.floor(capH * dpr));
+          var ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('no 2d context');
+          ctx.scale(dpr, dpr);
+          // Opaque base so a transparent (un-painted) raster never flattens to
+          // pure black in clipboards / PNG viewers.
+          ctx.fillStyle = bgColor;
+          ctx.fillRect(0, 0, capW, capH);
+          ctx.drawImage(img, 0, 0, capW, capH);
+          if (canvasLooksBlank(ctx, canvas.width, canvas.height)) return null;
+          return { dataUrl: canvas.toDataURL('image/png'), w: canvas.width, h: canvas.height };
+        }
+        function rasterizeViaImg(){
+          var img = new Image();
+          img.onload = function(){
+            try {
+              var res = paint(img);
+              if (!res) { reject(new Error('empty-render')); return; }
+              resolve(res);
+            } catch (err) {
+              reject(err instanceof Error ? err : new Error(String(err && err.message || err)));
             }
-            resolve({ dataUrl: canvas.toDataURL('image/png'), w: canvas.width, h: canvas.height });
+          };
+          img.onerror = function(){ reject(new Error('snapshot image failed')); };
+          img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+        // Rasterize via createImageBitmap(Blob) instead of <img>+drawImage. Chrome's
+        // <img src="data:image/svg+xml,..."> goes through "secure SVG rasterization"
+        // which has rendering quirks on backdrop-filter / mix-blend-mode / certain
+        // absolute-positioning combos. createImageBitmap uses a separate decode
+        // path that avoids those quirks. Falls back to the <img> path if the
+        // bitmap decode fails (older browsers, or SVG features the bitmap path
+        // rejects) or paints a uniform (blank) bitmap.
+        if (typeof window.createImageBitmap === 'function') {
+          try {
+            var blob = new Blob([svg], { type: 'image/svg+xml' });
+            window.createImageBitmap(blob).then(function(bitmap){
+              try {
+                var res = paint(bitmap);
+                if (!res) { rasterizeViaImg(); return; }
+                resolve(res);
+              } catch (err) {
+                rasterizeViaImg();
+              }
+            }, function(){
+              rasterizeViaImg();
+            });
+            return;
           } catch (err) {
-            reject(err instanceof Error ? err : new Error(String(err && err.message || err)));
+            // fall through
           }
-        };
-        img.onerror = function(){ reject(new Error('snapshot image failed')); };
-        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+        }
+        rasterizeViaImg();
       });
     });
   }

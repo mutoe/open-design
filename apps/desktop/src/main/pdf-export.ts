@@ -1,7 +1,12 @@
 import { writeFile } from "node:fs/promises";
 
 import { BrowserWindow, dialog } from "electron";
-import type { DesktopExportPdfInput, DesktopExportPdfResult } from "@open-design/sidecar-proto";
+import type {
+  DesktopExportImageInput,
+  DesktopExportImageResult,
+  DesktopExportPdfInput,
+  DesktopExportPdfResult,
+} from "@open-design/sidecar-proto";
 import { findRealElementRange, findRealTagEnd, findRealTagOffset, HTML_TAG_PATTERNS } from '@open-design/contracts/runtime/html-injection-points';
 
 export type PageSize = { height: number; width: number };
@@ -60,6 +65,129 @@ export const DECK_PRINT_CSS = `
   }
 }
 `;
+
+// Max BrowserWindow dimension Electron will spawn. Cap the requested image
+// size so a runaway scrollHeight (e.g. a misbehaving artifact reporting
+// 100_000px) cannot blow up the renderer. Captures larger than this are
+// still useful as proof-of-export even if cropped.
+const MAX_IMAGE_DIMENSION = 16_000;
+
+export async function exportImageFromHtml(input: DesktopExportImageInput): Promise<DesktopExportImageResult> {
+  const save = await dialog.showSaveDialog({
+    defaultPath: input.defaultFilename,
+    filters: [
+      { name: "PNG", extensions: ["png"] },
+      { name: "All Files", extensions: ["*"] },
+    ],
+    title: "Save Image",
+  });
+  if (save.canceled || !save.filePath) return { canceled: true, ok: true };
+
+  const initialWidth = Math.min(MAX_IMAGE_DIMENSION, Math.max(1, Math.floor(input.width)));
+  const initialHeight = Math.min(MAX_IMAGE_DIMENSION, Math.max(200, Math.floor(input.height)));
+
+  // Hidden BrowserWindow at a sane initial size — CDP's emulated
+  // viewport drives the actual capture dimensions, so window size
+  // here just affects the load/paint pipeline.
+  const window = new BrowserWindow({
+    backgroundColor: "#ffffff",
+    height: Math.min(1080, initialHeight),
+    show: false,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+    width: Math.min(1440, initialWidth),
+  });
+
+  try {
+    // Load via the daemon's raw file URL when available so the
+    // export window's Chromium sees the document under the same
+    // origin as the web-preview iframe. A `data:` URL has an
+    // opaque origin, which subtly changes font-fallback and CSS
+    // feature resolution on macOS — manifesting as a handful of
+    // CJK glyphs rendering as tofu boxes on certain weight+size
+    // combinations. Falling back to the inlined `data:` URL keeps
+    // the path working in older clients that don't send documentUrl.
+    if (input.documentUrl) {
+      await window.loadURL(input.documentUrl);
+    } else {
+      const doc = injectBaseHref(injectTitle(input.html, input.title), input.baseHref);
+      await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(doc)}`);
+    }
+    await waitForPrintableContent(window);
+
+    // Switch to the CDP capture path — same API Puppeteer uses for
+    // full-page screenshots. capturePage() on hidden BrowserWindows
+    // intermittently drops individual CJK glyphs from the GPU atlas
+    // (visible as a handful of tofu boxes on long pages, while
+    // identical characters elsewhere render fine); CDP's
+    // Page.captureScreenshot with captureBeyondViewport routes
+    // through a different internal pipeline that does not exhibit
+    // that bug, and it handles document-tall captures natively
+    // without needing setContentSize tricks that macOS clamps.
+    const png = await captureBeyondViewportAsPng(window, initialWidth);
+    await writeFile(save.filePath, png);
+    return { ok: true, path: save.filePath };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error), ok: false };
+  } finally {
+    if (!window.isDestroyed()) window.destroy();
+  }
+}
+
+async function captureBeyondViewportAsPng(window: BrowserWindow, width: number): Promise<Buffer> {
+  const dbg = window.webContents.debugger;
+  if (!dbg.isAttached()) dbg.attach("1.3");
+  try {
+    // Tell Chromium to lay the document out at the requested width.
+    // mobile: false keeps desktop UA hints; deviceScaleFactor: 2 gives
+    // a Retina-quality raster without changing CSS pixel sizes.
+    await dbg.sendCommand("Emulation.setDeviceMetricsOverride", {
+      deviceScaleFactor: 2,
+      height: 0,
+      mobile: false,
+      width,
+    });
+    await dbg.sendCommand("Emulation.setDefaultBackgroundColorOverride", {
+      color: { a: 255, b: 255, g: 255, r: 255 },
+    });
+    // Re-await fonts/images now that layout has been re-driven by the
+    // emulated width, in case the new width triggered media queries
+    // that loaded different assets.
+    await waitForPrintableContent(window);
+    const result = (await dbg.sendCommand("Page.captureScreenshot", {
+      captureBeyondViewport: true,
+      format: "png",
+      fromSurface: true,
+      optimizeForSpeed: false,
+    })) as { data: string };
+    return Buffer.from(result.data, "base64");
+  } finally {
+    try {
+      await dbg.sendCommand("Emulation.clearDeviceMetricsOverride");
+    } catch { /* ignore */ }
+    try {
+      await dbg.sendCommand("Emulation.setDefaultBackgroundColorOverride");
+    } catch { /* ignore */ }
+    if (dbg.isAttached()) dbg.detach();
+  }
+}
+
+// Wait two animation frames after a setContentSize so layout, lazy
+// images, and any ResizeObserver-driven reflow have all flushed before
+// capturePage runs.
+async function settleAfterResize(window: BrowserWindow): Promise<void> {
+  await window.webContents.executeJavaScript(
+    `new Promise(function(resolve){
+      requestAnimationFrame(function(){
+        requestAnimationFrame(function(){ resolve(true); });
+      });
+    })`,
+    true,
+  );
+}
 
 export async function exportPdfFromHtml(input: DesktopExportPdfInput): Promise<DesktopExportPdfResult> {
   const save = await dialog.showSaveDialog({

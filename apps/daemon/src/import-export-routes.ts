@@ -580,8 +580,10 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
   const {
     createProjectArchiveStream,
     createBatchArchiveStream,
+    buildDesktopImageExportInput,
     buildDesktopPdfExportInput,
     buildDesktopArtifactExportInput,
+    desktopImageExporter,
     desktopPdfExporter,
     desktopSlideRenderer,
     desktopArtifactExporter,
@@ -1352,6 +1354,52 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       res.json(body);
     } catch (err: any) {
       sendApiError(res, 400, 'BAD_REQUEST', String(err?.message || err));
+    }
+  });
+
+  // Desktop CDP image export (local fork): loads the artifact's real URL in a
+  // hidden BrowserWindow, captures via Page.captureScreenshot, and saves through
+  // the native save dialog. Distinct from POST /export/image (off-screen render
+  // returning PNG bytes) — different request/response contract.
+  app.post('/api/projects/:id/export/image-cdp', async (req, res) => {
+    if (typeof desktopImageExporter !== 'function') {
+      return sendApiError(
+        res,
+        501,
+        'UPSTREAM_UNAVAILABLE',
+        'desktop image export is only available in the desktop runtime',
+      );
+    }
+    try {
+      const { fileName, title, width, height } = req.body || {};
+      if (typeof fileName !== 'string' || fileName.length === 0) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'fileName required');
+      }
+      if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'width must be a positive number');
+      }
+      if (typeof height !== 'number' || !Number.isFinite(height) || height <= 0) {
+        return sendApiError(res, 400, 'BAD_REQUEST', 'height must be a positive number');
+      }
+      const input = await buildDesktopImageExportInput({
+        daemonUrl: daemonUrlRef.current,
+        fileName,
+        height: Math.floor(height),
+        projectId: req.params.id,
+        projectsRoot: PROJECTS_DIR,
+        title: typeof title === 'string' ? title : undefined,
+        width: Math.floor(width),
+      });
+      const result = await desktopImageExporter(input);
+      res.json(result);
+    } catch (err: any) {
+      const status = err && err.code === 'ENOENT' ? 404 : 400;
+      sendApiError(
+        res,
+        status,
+        status === 404 ? 'FILE_NOT_FOUND' : 'BAD_REQUEST',
+        String(err?.message || err),
+      );
     }
   });
 

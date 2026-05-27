@@ -155,6 +155,7 @@ import {
   exportAsPdf,
   exportAsZip,
   exportProjectAsHtml,
+  exportProjectAsImage,
   exportProjectAsPdf,
   exportProjectAsPptx,
   exportProjectAsZip,
@@ -15309,9 +15310,12 @@ function HtmlViewer({
     // it either way).
     await waitForAnimationFrame();
     await waitForAnimationFrame();
-    try {
-      const context = imageExportContext;
-      const targetTitle = context?.title ?? exportTitle;
+    const context = imageExportContext;
+    const targetTitle = context?.title ?? exportTitle;
+    // Capture + persist via the browser snapshot pipeline. Used directly for
+    // non-PNG formats and as the desktop CDP fallback. Reports its own
+    // outcome (toast + analytics signal) for every terminal state.
+    const saveViaBrowser = async (): Promise<void> => {
       let dataUrl = imageExportSnapshotDataUrlRef.current;
       if (!dataUrl) {
         // Export as image of a deck = the whole deck stitched into one long
@@ -15357,6 +15361,48 @@ function HtmlViewer({
             : t('fileViewer.exportImageDownloadStarted'),
         tone: 'success',
       });
+    };
+    try {
+      if (imageExportFormat === 'png' && !context) {
+        // Prefer the desktop CDP render for PNG: Electron's captureBeyondViewport
+        // loads the artifact's real URL (matching the preview origin) and avoids
+        // the <img>-SVG rasterizer's pink-block / dropped-CJK-glyph defects
+        // (#136). On web (no desktop sidecar) the route 404s and
+        // exportProjectAsImage invokes the fallback below. CDP only emits PNG,
+        // so JPEG/WebP always use the browser path. Version exports (context
+        // set) carry their own HTML content, which the CDP path cannot see —
+        // it loads the live file URL — so they stay on the browser pipeline.
+        const activeIframe = iframeRef.current;
+        let width = activeIframe?.clientWidth || 1280;
+        let height = 800;
+        try {
+          const doc = activeIframe?.contentDocument;
+          if (doc) {
+            const de = doc.documentElement;
+            const body = doc.body || de;
+            width = Math.max(de.scrollWidth, body.scrollWidth, activeIframe?.clientWidth || 0, 320);
+            height = Math.max(de.scrollHeight, body.scrollHeight, 800);
+          }
+        } catch {
+          /* cross-origin or detached — keep defaults */
+        }
+        const result = await exportProjectAsImage({
+          fallbackImage: saveViaBrowser,
+          filePath: file.name,
+          height,
+          projectId,
+          title: targetTitle,
+          width,
+        });
+        if (result === 'desktop') {
+          // The browser fallback reports its own outcome inside saveViaBrowser;
+          // the desktop CDP render succeeds silently, so report it here.
+          fireImageExportResult('success');
+          setExportToast({ message: t('fileViewer.exportImageSaved'), tone: 'success' });
+        }
+      } else {
+        await saveViaBrowser();
+      }
     } catch (err) {
       console.warn('[exportAsImage] failed to save snapshot:', err);
       const message = err instanceof Error && err.message ? err.message : t('fileViewer.exportImageFailed');

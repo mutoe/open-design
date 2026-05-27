@@ -9,6 +9,8 @@ import {
   type DaemonStatusSnapshot,
   type DesktopExportArtifactInput,
   type DesktopExportArtifactResult,
+  type DesktopExportImageInput,
+  type DesktopExportImageResult,
   type DesktopExportPdfInput,
   type DesktopExportPdfResult,
   type DesktopRenderSlidesInput,
@@ -103,6 +105,18 @@ export async function startDaemonSidecar(
   options: { exit?: (code?: number) => void } = {},
 ): Promise<DaemonSidecarHandle> {
   const serverHandle: StartedDaemonRuntime = await startDaemonRuntime({
+    desktopImageExporter: async (input: DesktopExportImageInput): Promise<DesktopExportImageResult> => {
+      const desktopIpc = resolveAppIpcPath({
+        app: APP_KEYS.DESKTOP,
+        contract: OPEN_DESIGN_SIDECAR_CONTRACT,
+        namespace: runtime.namespace,
+      });
+      return await requestJsonIpc<DesktopExportImageResult>(
+        desktopIpc,
+        { input, type: SIDECAR_MESSAGES.EXPORT_IMAGE },
+        { timeoutMs: 600_000 },
+      );
+    },
     desktopPdfExporter: async (input: DesktopExportPdfInput): Promise<DesktopExportPdfResult> => {
       const desktopIpc = resolveAppIpcPath({
         app: APP_KEYS.DESKTOP,

@@ -327,6 +327,7 @@ describe('buildSrcdoc', () => {
   it('renders snapshot SVGs through data URLs so canvas export stays origin-clean', () => {
     const srcdoc = buildSrcdoc('<main style="color:red">Hero</main>');
 
+    expect(srcdoc).toContain('function rasterizeViaImg()');
     expect(srcdoc).toContain("img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);");
     expect(srcdoc).not.toContain('createObjectURL');
     expect(srcdoc).not.toContain('snapshot too large');
@@ -336,7 +337,7 @@ describe('buildSrcdoc', () => {
     const srcdoc = buildSrcdoc('<main style="color:red">Hero</main>');
 
     expect(srcdoc).toContain('function scrollOffset()');
-    expect(srcdoc).toContain('left:\' + (-scroll.x) + \'px;top:\' + (-scroll.y) + \'px;');
+    expect(srcdoc).toContain('left:\' + offX + \'px;top:\' + offY + \'px;');
     expect(srcdoc).toContain('<foreignObject x="0" y="0"');
     expect(srcdoc).not.toContain('<foreignObject x="\' + (-window.scrollX || 0)');
   });
