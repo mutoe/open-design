@@ -1128,6 +1128,29 @@ function saveChatPanelWidth(width: number): void {
   }
 }
 
+function workspaceFocusedKey(projectId: string): string {
+  return `od:workspace-focused:${projectId}`;
+}
+
+function readWorkspaceFocused(projectId: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return window.localStorage.getItem(workspaceFocusedKey(projectId)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function saveWorkspaceFocused(projectId: string, value: boolean): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (value) window.localStorage.setItem(workspaceFocusedKey(projectId), '1');
+    else window.localStorage.removeItem(workspaceFocusedKey(projectId));
+  } catch {
+    // localStorage can be unavailable in hardened browser contexts.
+  }
+}
+
 function autoSendFirstMessageKey(projectId: string): string {
   return `od:auto-send-first:${projectId}`;
 }
@@ -2379,7 +2402,7 @@ export function ProjectView({
   const projectFilesRequestSeqRef = useRef(0);
   const [liveArtifacts, setLiveArtifacts] = useState<LiveArtifactSummary[]>([]);
   const [liveArtifactEvents, setLiveArtifactEvents] = useState<LiveArtifactEventItem[]>([]);
-  const [workspaceFocused, setWorkspaceFocused] = useState(false);
+  const [workspaceFocused, setWorkspaceFocused] = useState(() => readWorkspaceFocused(project.id));
   // Read by `renderPreferredChatPanelWidth` instead of closing over
   // `workspaceFocused` directly, so that callback's identity (and therefore
   // the ResizeObserver effect keyed on it, below) doesn't need to depend on
@@ -3056,7 +3079,7 @@ export function ProjectView({
   // once per open, so expanding chat after that is sticky for the visit.
   const sharedNonOwnerChatDefaultAppliedRef = useRef<string | null>(null);
   useEffect(() => {
-    setWorkspaceFocused(false);
+    setWorkspaceFocused(readWorkspaceFocused(project.id));
     sharedNonOwnerChatDefaultAppliedRef.current = null;
   }, [project.id]);
 
@@ -3073,6 +3096,10 @@ export function ProjectView({
     setWorkspaceFocused(true);
     sharedNonOwnerChatDefaultAppliedRef.current = project.id;
   }, [project.id, projectCollab.enabled, projectCollab.isSharedNonOwner]);
+
+  useEffect(() => {
+    saveWorkspaceFocused(project.id, workspaceFocused);
+  }, [project.id, workspaceFocused]);
 
   // Load messages whenever the active conversation changes. This happens
   // on project mount (after conversations load) and on user-triggered
