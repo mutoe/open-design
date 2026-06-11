@@ -15041,7 +15041,8 @@ function HtmlViewer({
   };
   const openShareMenu = () => openUnifiedActionMenu('share', 'share_dropdown');
   const openDownloadMenu = () => openUnifiedActionMenu('export', 'download_dropdown');
-  const captureExportImageSnapshot = useCallback(async (
+  const capturePreviewSnapshot = useCallback(async (
+    mode: 'full' | 'viewport',
     options?: { wholeDeck?: boolean; context?: HtmlVersionExportContext | null },
   ) => {
     const exportContext = options?.context ?? null;
@@ -15063,8 +15064,11 @@ function HtmlViewer({
     // top-to-bottom into one long image — matching the slide count the viewer
     // reports; otherwise (Copy screenshot, Mark/Draw capture) it grabs the
     // CURRENT slide, mirroring what's on screen. An ordinary page is its
-    // full-page capture either way.
-    if (isOpenDesignHostAvailable() && projectId && file.name) {
+    // full-page capture either way. Viewport captures (draw/comment overlay)
+    // skip this path entirely: the overlay composites strokes in viewport
+    // coordinates, so its background must be the visible on-screen region,
+    // never an off-screen full-page render.
+    if (mode === 'full' && isOpenDesignHostAvailable() && projectId && file.name) {
       // Deck-vs-page uses the same signal as PDF export — broader than the viewer's nav
       // signal — so runtime-managed decks (`<deck-stage>` / `data-screen-label`,
       // no literal `.slide`) export as a deck instead of a single page-mode shot
@@ -15123,18 +15127,17 @@ function HtmlViewer({
     const hostSnapshot = await captureHostIframeSnapshot(visibleIframe);
     if (hostSnapshot) return hostSnapshot;
 
-    // "Export as image" should yield the whole HTML canvas the user designed,
-    // not just the scrolled-into-view region, so capture in full-page mode.
     if (!useUrlLoadPreview) {
       const activeIframe = srcDocPreviewIframeRef.current ?? iframeRef.current;
-      // Capture in a FRESH isolated iframe rather than the live preview when
-      // we have the srcDoc markup: the live srcDoc iframe reuses one shell
-      // across document.open/write cycles, so an artifact whose classic-script
-      // top-level declarations survive document.open throws "Identifier 'X'
-      // has already been declared" on the second write and never reaches its
-      // snapshot bridge. A clean iframe owns its own JS realm. See
-      // captureFullSnapshotInIsolatedFrame.
-      if (srcDoc) {
+      // Full-page captures run in a FRESH isolated iframe rather than the live
+      // preview when we have the srcDoc markup: the live srcDoc iframe reuses
+      // one shell across document.open/write cycles, so an artifact whose
+      // classic-script top-level declarations survive document.open throws
+      // "Identifier 'X' has already been declared" on the second write and
+      // never reaches its snapshot bridge. A clean iframe owns its own JS
+      // realm. Viewport captures (draw/comment overlay) stay on the live
+      // iframe — they must reflect the on-screen scroll position.
+      if (mode === 'full' && srcDoc) {
         return captureFullSnapshotInIsolatedFrame(srcDoc, activeIframe?.clientWidth || 1280);
       }
       if (!activeIframe) {
@@ -15143,14 +15146,14 @@ function HtmlViewer({
       }
       await waitForIframeLoadOrTimeout(activeIframe, 250);
       await waitForAnimationFrame();
-      return requestPreviewSnapshotWithRetry(activeIframe, { mode: 'full' });
+      return requestPreviewSnapshotWithRetry(activeIframe, { mode });
     }
 
     const urlIframe = iframeRef.current ?? urlPreviewIframeRef.current;
     if (urlIframe) {
       await waitForIframeLoadOrTimeout(urlIframe, 250);
       await waitForAnimationFrame();
-      const urlSnapshot = await requestPreviewSnapshotWithRetry(urlIframe, { mode: 'full' });
+      const urlSnapshot = await requestPreviewSnapshotWithRetry(urlIframe, { mode });
       if (urlSnapshot) return urlSnapshot;
     }
 
@@ -15161,7 +15164,7 @@ function HtmlViewer({
         captureFailureStageRef.current = 'NO_URL_IFRAME';
         return null;
       }
-      return requestPreviewSnapshotWithRetry(activeIframe, { mode: 'full' });
+      return requestPreviewSnapshotWithRetry(activeIframe, { mode });
     }
 
     if (useLazySrcDocTransport && !srcDocShellReady) {
@@ -15173,7 +15176,7 @@ function HtmlViewer({
     const restoreVisibility = temporarilyExposeIframeForSnapshot(srcDocIframe);
     try {
       await waitForAnimationFrame();
-      return requestPreviewSnapshotWithRetry(srcDocIframe, { mode: 'full' });
+      return requestPreviewSnapshotWithRetry(srcDocIframe, { mode });
     } finally {
       restoreVisibility();
     }
@@ -15190,6 +15193,19 @@ function HtmlViewer({
     projectId,
     file.name,
   ]);
+  // "Export as image" should yield the whole HTML canvas the user designed,
+  // not just the scrolled-into-view region, so it captures in full-page mode.
+  const captureExportImageSnapshot = useCallback(
+    (options?: { wholeDeck?: boolean; context?: HtmlVersionExportContext | null }) =>
+      capturePreviewSnapshot('full', options),
+    [capturePreviewSnapshot],
+  );
+  // The draw/comment overlay composites strokes in viewport coordinates, so
+  // its background must be the visible region, not the full canvas.
+  const captureViewportSnapshot = useCallback(
+    () => capturePreviewSnapshot('viewport'),
+    [capturePreviewSnapshot],
+  );
 
   // NOTE: the clipboard-capture handler that used to live here was removed with
   // the export menu's 截图 row — that row was its only caller. Screenshot-to-chat
@@ -17244,7 +17260,7 @@ function HtmlViewer({
                     active={drawOverlayOpen}
                     onActiveChange={setDrawOverlayOpen}
                     captureViewport
-                    captureSnapshot={captureExportImageSnapshot}
+                    captureSnapshot={captureViewportSnapshot}
                     captureTarget={null}
                     filePath={file.name}
                     sendDisabled={streaming}
