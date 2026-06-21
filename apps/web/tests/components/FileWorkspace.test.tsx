@@ -23,7 +23,7 @@ import {
 import { ENABLE_BLANK_PAGE_WORKSPACE_ENTRYPOINT } from '../../src/components/workspace/tab-launcher';
 import { I18nProvider } from '../../src/i18n';
 import { DesignFilesPanel } from '../../src/components/DesignFilesPanel';
-import { projectSplitClassName, projectSplitStyle } from '../../src/components/ProjectView';
+import { applySplitChatPanelWidth, projectSplitClassName, projectSplitStyle } from '../../src/components/ProjectView';
 import {
   fetchProjectFileText,
   uploadProjectFiles,
@@ -3373,6 +3373,30 @@ describe('projectSplitClassName', () => {
       '--project-workspace-panel-track': 'minmax(420px, 1fr)',
     });
     expect(projectSplitStyle(true, 512, 'minmax(420px, 1fr)')).toBeUndefined();
+  });
+});
+
+describe('applySplitChatPanelWidth', () => {
+  it('writes the animatable width custom properties in split mode', () => {
+    const split = document.createElement('div');
+    split.className = 'split';
+    applySplitChatPanelWidth(split, 512, 'minmax(420px, 1fr)', false);
+    expect(split.style.getPropertyValue('--project-chat-panel-width')).toBe('512px');
+    expect(split.style.getPropertyValue('--project-chat-handle-width')).toBe('8px');
+    expect(split.style.getPropertyValue('--project-workspace-panel-track')).toBe('minmax(420px, 1fr)');
+  });
+
+  it('never leaves inline widths behind in focus mode, so a window resize cannot pin the workspace into the hidden chat column', () => {
+    const split = document.createElement('div');
+    split.className = 'split split-focus';
+    // Simulate stale widths left over from split mode.
+    split.style.setProperty('--project-chat-panel-width', '512px');
+    split.style.setProperty('--project-chat-handle-width', '8px');
+    split.style.setProperty('--project-workspace-panel-track', 'minmax(420px, 1fr)');
+    applySplitChatPanelWidth(split, 512, 'minmax(420px, 1fr)', true);
+    expect(split.style.getPropertyValue('--project-chat-panel-width')).toBe('');
+    expect(split.style.getPropertyValue('--project-chat-handle-width')).toBe('');
+    expect(split.style.getPropertyValue('--project-workspace-panel-track')).toBe('');
   });
 });
 

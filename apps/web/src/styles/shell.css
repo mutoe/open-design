@@ -255,6 +255,46 @@ html.od-radial-open .workspace-shell {
   background: color-mix(in srgb, var(--text) 6%, transparent);
   border-color: transparent;
 }
+/* Landing slot for the presented viewer's exit control. Collapses to nothing
+   (no stray flex gap) whenever no presentation is active. Sits directly in the
+   chrome header since #5517 removed the `.workspace-tabs-actions` wrapper, so
+   it owns the spacing, stacking, and Electron no-drag rules that wrapper used
+   to provide. */
+.workspace-tabs-present-slot {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  align-self: stretch;
+  margin-left: 4px;
+  z-index: 35;
+  -webkit-app-region: no-drag;
+}
+.workspace-tabs-present-slot:empty {
+  display: none;
+}
+/* The Exit-presentation pill, portaled in beside the search button while a
+   tab presentation is running. Accent-tinted so the way out reads clearly. */
+.workspace-tabs-present-exit {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-panel));
+  color: var(--text-strong);
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  -webkit-app-region: no-drag;
+  transition: background 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.workspace-tabs-present-exit:hover {
+  background: color-mix(in srgb, var(--accent) 20%, var(--bg-panel));
+}
 .workspace-tabs-strip {
   --workspace-tabs-edge-inset: 10px;
   align-self: stretch;

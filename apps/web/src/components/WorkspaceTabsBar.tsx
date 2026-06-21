@@ -1867,6 +1867,23 @@ export function WorkspaceTabsBar({
       </div>
       </>,
       )}
+      {/* Portal landing slot for the active viewer's "Exit presentation"
+          control. The button itself is owned by FileViewer (it holds the
+          present state); rendering it here keeps it out of the presented
+          content area. #5517 removed the tab-search button and its
+          `.workspace-tabs-actions` wrapper, so the slot sits directly in the
+          chrome header and carries its own spacing / no-drag rules.
+
+          Deliberately OUTSIDE dockPortal: in docked mode the strip relocates
+          into the chat column, which can be collapsed away entirely while a
+          presentation runs — the way out of Present must not ride along into
+          something the user cannot see. Collapses to nothing (`:empty`)
+          unless a presentation is active.
+
+          Ordered BEFORE the account-actions slot on purpose: that slot carries
+          `margin-left: auto` and absorbs the free space, so anything after it
+          would be pushed past it to the far right. */}
+      <div id="od-present-exit-slot" className="workspace-tabs-present-slot" />
       <div
         id={WORKSPACE_CHROME_ACCOUNT_ACTIONS_ID}
         className="workspace-chrome-account-actions"

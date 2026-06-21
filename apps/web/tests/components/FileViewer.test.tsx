@@ -5057,6 +5057,59 @@ describe('FileViewer SVG artifacts', () => {
     });
   });
 
+  it('relocates the Exit-presentation control into the tab-bar slot, off the content area', async () => {
+    const file = baseFile({
+      name: 'page.html',
+      path: 'page.html',
+      mime: 'text/html',
+      kind: 'html',
+      artifactManifest: {
+        version: 1,
+        kind: 'html',
+        title: 'Page',
+        entry: 'page.html',
+        renderer: 'html',
+        exports: ['html'],
+      },
+    });
+    const workspaceShell = document.createElement('div');
+    workspaceShell.className = 'workspace-shell';
+    const chrome = document.createElement('div');
+    chrome.className = 'workspace-tabs-chrome app-chrome-header';
+    // The global tab bar exposes this landing slot for the present control.
+    const slot = document.createElement('div');
+    slot.id = 'od-present-exit-slot';
+    chrome.appendChild(slot);
+    const workspaceBody = document.createElement('div');
+    workspaceBody.className = 'workspace-shell__body';
+    workspaceShell.append(chrome, workspaceBody);
+    document.body.appendChild(workspaceShell);
+
+    render(
+      <FileViewer projectId="project-1" projectKind="prototype" file={file} liveHtml="<html><body>hi</body></html>" />,
+      { container: workspaceBody },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /present/i }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /in this tab/i }));
+
+    // The exit control lands in the tab-bar slot, not over the presented content.
+    const slotButton = await waitFor(() => {
+      const btn = slot.querySelector<HTMLButtonElement>('.workspace-tabs-present-exit');
+      expect(btn).toBeTruthy();
+      return btn!;
+    });
+    expect(document.querySelector('.present-overlay .present-exit')).toBeNull();
+
+    // Clicking it leaves presentation mode.
+    fireEvent.click(slotButton);
+    await waitFor(() => {
+      expect(document.body.querySelector('.present-overlay')).toBeNull();
+    });
+
+    workspaceShell.remove();
+  });
+
   it('allows downloads in React component preview iframes', async () => {
     const file = baseFile({
       name: 'Card.jsx',

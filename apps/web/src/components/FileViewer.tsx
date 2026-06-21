@@ -8322,6 +8322,10 @@ function HtmlViewer({
     }
   }
   const [inTabPresent, setInTabPresent] = useState(false);
+  // Resolved lazily while presenting: the DOM slot in the global tab bar
+  // (`#od-present-exit-slot`) that hosts the Exit-presentation control so it
+  // sits beside the search button instead of over the presented content.
+  const [presentExitSlot, setPresentExitSlot] = useState<HTMLElement | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const nextPreviewContentWidthCacheKey = `${previewContentWidthCacheBaseKey}:${reloadKey}`;
   // Set to true permanently once `source` has been populated for the first
@@ -13928,7 +13932,16 @@ function HtmlViewer({
   }, [deployMenuOpen, workspaceActive]);
 
   useEffect(() => {
-    if (!workspaceActive || !inTabPresent) return;
+    // `#od-present-exit-slot` is a single node in the chrome header, but this
+    // component is mounted once per open tab. A pane that is not workspace-
+    // active must actively RELEASE the slot, not merely skip claiming it —
+    // otherwise it keeps portaling its own Exit control into the shared node
+    // behind whichever pane the user is actually looking at.
+    if (!workspaceActive || !inTabPresent) {
+      setPresentExitSlot(null);
+      return;
+    }
+    setPresentExitSlot(document.getElementById('od-present-exit-slot'));
     const bodyStyle = document.body.style;
     const previousChromeHeight = bodyStyle.getPropertyValue('--workspace-tabs-chrome-height');
     const updateChromeHeight = () => {
@@ -17762,6 +17775,18 @@ function HtmlViewer({
           role="dialog"
           aria-label={t('fileViewer.present')}
         >
+          {/* When the global tab-bar slot is available the exit control is
+              portaled there (out of the content area); the in-overlay button
+              is only a fallback for when the slot can't be found. */}
+          {presentExitSlot ? null : (
+            <button
+              className="present-exit"
+              onClick={() => setInTabPresent(false)}
+              aria-label={t('fileViewer.exitPresentation')}
+            >
+              <Icon name="close" size={13} /> {t('fileViewer.exitPresentation')}
+            </button>
+          )}
           {effectiveDeck || !useUrlLoadPreview ? (
             <iframe
               title="present"
@@ -17803,6 +17828,17 @@ function HtmlViewer({
           ) : null}
         </div>,
         document.body,
+      ) : null}
+      {inTabPresent && presentExitSlot ? createPortal(
+        <button
+          type="button"
+          className="workspace-tabs-present-exit"
+          onClick={() => setInTabPresent(false)}
+          aria-label={t('fileViewer.exitPresentation')}
+        >
+          <Icon name="close" size={13} /> {t('fileViewer.exitPresentation')}
+        </button>,
+        presentExitSlot,
       ) : null}
       {/* No `!viewerOnly` here: the modal already fails closed on the one
           write action it hosts — `restoreDisabled` includes `viewerOnly` —

@@ -1588,7 +1588,7 @@ export function projectSplitStyle(
 // `var(--project-chat-panel-width) var(--project-chat-handle-width) var(--project-workspace-panel-track)`
 // declared once on `.split`, so a plain custom-property write is all a
 // collapse/expand or a live resize needs to animate or track the cursor.
-function applySplitChatPanelWidth(
+export function applySplitChatPanelWidth(
   split: HTMLDivElement | null,
   width: number,
   workspacePanelTrack: string,
