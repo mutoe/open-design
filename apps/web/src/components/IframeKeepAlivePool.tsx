@@ -57,6 +57,35 @@ export function previewIframeKeepAliveKey(projectId: string, fileName: string): 
   return `${projectId}\0${fileName}`;
 }
 
+type ParentWithMoveBefore = HTMLElement & {
+  moveBefore?: (node: Node, child: Node | null) => void;
+};
+
+/**
+ * Move a pooled iframe between hosts without discarding its browsing context.
+ *
+ * A plain appendChild() move forces Chromium to tear down and reload the
+ * frame; when that reload races the move (e.g. many tabs attach/park during
+ * session restore), the frame's compositor can wedge into a permanently blank
+ * state that survives further navigations on the same element. moveBefore()
+ * moves the node atomically and keeps the browsing context alive, so no
+ * reload happens at all. Fall back to appendChild() when the API is missing,
+ * the element is not connected yet, or the move's preconditions fail.
+ */
+export function adoptPooledIframeElement(host: HTMLElement, element: HTMLIFrameElement) {
+  const parent = host as ParentWithMoveBefore;
+  if (element.isConnected && typeof parent.moveBefore === 'function') {
+    try {
+      parent.moveBefore(element, null);
+      return;
+    } catch {
+      // moveBefore requires both nodes to be connected to the same document;
+      // appendChild is always a valid, if lossy, move.
+    }
+  }
+  host.appendChild(element);
+}
+
 function parkIframeElement(frame: HTMLIFrameElement) {
   frame.onload = null;
   frame.removeAttribute('data-testid');
@@ -133,7 +162,7 @@ export function IframeKeepAliveProvider({
       }
       entry.lastUsedAt = Date.now();
       activeKeysRef.current.add(key);
-      host.appendChild(entry.element);
+      adoptPooledIframeElement(host, entry.element);
       // A project switch can leave parked entries behind immediately before
       // the next project's viewers attach. Enforce the bound here as well as
       // on release so a newly attached frame cannot temporarily push the pool
@@ -147,7 +176,7 @@ export function IframeKeepAliveProvider({
       activeKeysRef.current.delete(key);
       if (entry && parkedHost) {
         parkIframeElement(entry.element);
-        parkedHost.appendChild(entry.element);
+        adoptPooledIframeElement(parkedHost, entry.element);
       }
       enforceLimit();
     },
@@ -238,7 +267,7 @@ export function useIframeKeepAlivePool(): IframeKeepAlivePoolValue {
         }
         entry.lastUsedAt = Date.now();
         fallbackActiveKeysRef.current.add(key);
-        host.appendChild(entry.element);
+        adoptPooledIframeElement(host, entry.element);
         return entry.element;
       },
       release(key) {
