@@ -1,6 +1,6 @@
 import { writeFile } from "node:fs/promises";
 
-import { BrowserWindow, dialog } from "electron";
+import { BrowserWindow, dialog, nativeImage } from "electron";
 import type {
   DesktopExportImageInput,
   DesktopExportImageResult,
@@ -9,7 +9,13 @@ import type {
 } from "@open-design/sidecar-proto";
 import { findRealElementRange, findRealTagEnd, findRealTagOffset, HTML_TAG_PATTERNS } from '@open-design/contracts/runtime/html-injection-points';
 
-import { queryPageContentExtent, resolvePageCaptureCrop } from "./deck-capture.js";
+import {
+  queryPageColumnExtent,
+  queryPageContentExtent,
+  queryPageScrollWidth,
+  resolvePageCaptureCrop,
+  resolvePageLayoutWidth,
+} from "./deck-capture.js";
 
 export type PageSize = { height: number; width: number };
 
@@ -139,6 +145,35 @@ export async function exportImageFromHtml(input: DesktopExportImageInput): Promi
   }
 }
 
+// The capture renders at deviceScaleFactor 2 for Retina-quality output.
+const CDP_CAPTURE_DSF = 2;
+// Chromium composites captureBeyondViewport into one GPU surface. Past 16384
+// device px the surface WRAPS AROUND to the page top — the region beyond the
+// limit shows the page start again (with sticky chrome re-stuck at the seam)
+// and the true page tail is lost. Verified empirically on macOS/Electron 41.
+const MAX_CAPTURE_SURFACE_DEVICE_PX = 16_384;
+// RGBA bytes for the stitched output buffer — same budget as the offscreen
+// stitcher (deck-capture PAGE_RAM_BUDGET_BYTES).
+const CDP_STITCH_RAM_BUDGET_BYTES = 320 * 1024 * 1024;
+
+// Splits a tall capture into vertical bands (CSS px) so no single
+// Page.captureScreenshot output exceeds the wraparound-safe surface size.
+// A page within the limit stays a single full capture.
+export function planCdpCaptureBands(
+  cssHeight: number,
+  deviceScaleFactor: number,
+  maxDevicePx: number = MAX_CAPTURE_SURFACE_DEVICE_PX,
+): Array<{ y: number; height: number }> {
+  const total = Math.max(1, Math.ceil(cssHeight));
+  if (total * deviceScaleFactor <= maxDevicePx) return [{ y: 0, height: total }];
+  const bandCss = Math.max(1, Math.floor(maxDevicePx / 2 / deviceScaleFactor));
+  const bands: Array<{ y: number; height: number }> = [];
+  for (let y = 0; y < total; y += bandCss) {
+    bands.push({ y, height: Math.min(bandCss, total - y) });
+  }
+  return bands;
+}
+
 // Exported so a harness/spec can drive the capture pipeline directly, without
 // exportImageFromHtml's native save dialog.
 export async function captureBeyondViewportAsPng(window: BrowserWindow, width: number): Promise<Buffer> {
@@ -148,12 +183,7 @@ export async function captureBeyondViewportAsPng(window: BrowserWindow, width: n
     // Tell Chromium to lay the document out at the requested width.
     // mobile: false keeps desktop UA hints; deviceScaleFactor: 2 gives
     // a Retina-quality raster without changing CSS pixel sizes.
-    await dbg.sendCommand("Emulation.setDeviceMetricsOverride", {
-      deviceScaleFactor: 2,
-      height: 0,
-      mobile: false,
-      width,
-    });
+    await overrideCdpLayoutWidth(dbg, width);
     await dbg.sendCommand("Emulation.setDefaultBackgroundColorOverride", {
       color: { a: 255, b: 255, g: 255, r: 255 },
     });
@@ -161,6 +191,26 @@ export async function captureBeyondViewportAsPng(window: BrowserWindow, width: n
     // emulated width, in case the new width triggered media queries
     // that loaded different assets.
     await waitForPrintableContent(window);
+
+    // A LONG page with an author-capped centered column re-lays out at the
+    // column width so the page background doesn't export as wide flanks (the
+    // requested width is just the preview pane's size). Reverted when the
+    // narrowed layout overflows horizontally. Shared decision logic with the
+    // offscreen path (deck-capture resolvePageLayoutWidth).
+    let layoutWidth = width;
+    const narrowed = resolvePageLayoutWidth(await queryPageColumnExtent(window), width);
+    if (narrowed) {
+      await overrideCdpLayoutWidth(dbg, narrowed);
+      await waitForPrintableContent(window);
+      const scrollW = await queryPageScrollWidth(window);
+      if (scrollW != null && scrollW <= narrowed + 2) {
+        layoutWidth = narrowed;
+      } else {
+        await overrideCdpLayoutWidth(dbg, width);
+        await waitForPrintableContent(window);
+      }
+    }
+
     // Content occupying less than one viewport exports at its own size — the
     // requested width/height come from the preview iframe's scroll size, whose
     // floor is the preview pane, so a small artifact on a `min-height:100vh`
@@ -169,14 +219,21 @@ export async function captureBeyondViewportAsPng(window: BrowserWindow, width: n
     // resolvePageCaptureCrop (see deck-capture.ts); the clip is in CSS px and
     // the output scales by deviceScaleFactor automatically.
     const clip = await resolveCdpContentClip(window);
-    const result = (await dbg.sendCommand("Page.captureScreenshot", {
-      captureBeyondViewport: true,
-      ...(clip ? { clip: { ...clip, scale: 1 } } : {}),
-      format: "png",
-      fromSurface: true,
-      optimizeForSpeed: false,
-    })) as { data: string };
-    return Buffer.from(result.data, "base64");
+    if (clip) {
+      return await captureCdpPng(dbg, clip);
+    }
+
+    // Tall pages capture in vertical bands and stitch: a single beyond-viewport
+    // pass wraps around past MAX_CAPTURE_SURFACE_DEVICE_PX, and its viewport
+    // expansion re-resolves 100vh against the whole document height (stretching
+    // hero sections). Clip bands render against the window's real viewport, so
+    // vh keeps its on-screen meaning and sticky chrome stays at the page top.
+    const cssH = await queryPageScrollHeight(window);
+    const bands = planCdpCaptureBands(cssH, CDP_CAPTURE_DSF);
+    if (bands.length === 1) {
+      return await captureCdpPng(dbg, null);
+    }
+    return await captureCdpBandsStitched(dbg, layoutWidth, cssH, bands);
   } finally {
     try {
       await dbg.sendCommand("Emulation.clearDeviceMetricsOverride");
@@ -186,6 +243,80 @@ export async function captureBeyondViewportAsPng(window: BrowserWindow, width: n
     } catch { /* ignore */ }
     if (dbg.isAttached()) dbg.detach();
   }
+}
+
+type CdpDebugger = Electron.Debugger;
+
+async function overrideCdpLayoutWidth(dbg: CdpDebugger, width: number): Promise<void> {
+  await dbg.sendCommand("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: CDP_CAPTURE_DSF,
+    height: 0,
+    mobile: false,
+    width: Math.max(1, Math.round(width)),
+  });
+}
+
+async function captureCdpPng(
+  dbg: CdpDebugger,
+  clip: { x: number; y: number; width: number; height: number } | null,
+): Promise<Buffer> {
+  const result = (await dbg.sendCommand("Page.captureScreenshot", {
+    captureBeyondViewport: true,
+    ...(clip ? { clip: { ...clip, scale: 1 } } : {}),
+    format: "png",
+    fromSurface: true,
+    optimizeForSpeed: false,
+  })) as { data: string };
+  return Buffer.from(result.data, "base64");
+}
+
+async function captureCdpBandsStitched(
+  dbg: CdpDebugger,
+  layoutWidth: number,
+  cssH: number,
+  bands: Array<{ y: number; height: number }>,
+): Promise<Buffer> {
+  const estimatedBytes = layoutWidth * CDP_CAPTURE_DSF * cssH * CDP_CAPTURE_DSF * 4;
+  if (estimatedBytes > CDP_STITCH_RAM_BUDGET_BYTES) {
+    throw new Error(`page is too tall to export as one image (~${cssH}px) — export as PDF instead`);
+  }
+  const chunks: Array<{ bmp: Buffer; w: number; h: number }> = [];
+  let outW = 0;
+  let outH = 0;
+  for (const band of bands) {
+    const png = await captureCdpPng(dbg, { x: 0, y: band.y, width: layoutWidth, height: band.height });
+    const image = nativeImage.createFromBuffer(png);
+    const size = image.getSize();
+    if (size.width < 1 || size.height < 1) {
+      throw new Error("image export band came back empty");
+    }
+    chunks.push({ bmp: image.toBitmap(), w: size.width, h: size.height });
+    outW = Math.max(outW, size.width);
+    outH += size.height;
+  }
+  const out = Buffer.alloc(outW * outH * 4);
+  let row = 0;
+  for (const chunk of chunks) {
+    if (chunk.w === outW) {
+      chunk.bmp.copy(out, row * outW * 4);
+    } else {
+      // Defensive width mismatch — copy the overlapping width row by row.
+      const rowWidth = Math.min(chunk.w, outW) * 4;
+      for (let r = 0; r < chunk.h; r++) {
+        chunk.bmp.copy(out, (row + r) * outW * 4, r * chunk.w * 4, r * chunk.w * 4 + rowWidth);
+      }
+    }
+    row += chunk.h;
+  }
+  return nativeImage.createFromBitmap(out, { width: outW, height: outH }).toPNG();
+}
+
+async function queryPageScrollHeight(window: BrowserWindow): Promise<number> {
+  const value = (await window.webContents.executeJavaScript(
+    "Math.ceil(Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0))",
+    true,
+  )) as number;
+  return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
 // Measures the emulated viewport + content extent and asks the shared resolver

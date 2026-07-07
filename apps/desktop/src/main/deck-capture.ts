@@ -1569,6 +1569,29 @@ async function capturePage(
     return await paginatePageViewports(window, totalLogical, jpeg, outputDir, pageSize);
   }
 
+  // A LONG page whose content is an author-capped centered column re-lays out
+  // at the column width, so the page background doesn't export as wide flanks.
+  // Reverted if the narrowed layout overflows horizontally (fixed-width
+  // content wider than the new viewport). Single-viewport pages skip this and
+  // use the content-box crop below instead.
+  if (cropToContent) {
+    const narrowed = resolvePageLayoutWidth(await queryPageColumnExtent(window), pageSize.w);
+    if (narrowed) {
+      window.setContentSize(narrowed, pageSize.h);
+      await nextFrames(window);
+      const scrollW = await queryPageScrollWidth(window);
+      if (scrollW != null && scrollW <= narrowed + 2) {
+        pageSize = { w: narrowed, h: pageSize.h };
+        // Reveal-on-scroll content may lay out differently at the new width —
+        // re-run the freeze + scroll prewarm so it settles before capture.
+        await preparePageForCapture(window);
+      } else {
+        window.setContentSize(pageSize.w, pageSize.h);
+        await nextFrames(window);
+      }
+    }
+  }
+
   // Content occupying less than one viewport exports at its own size: without
   // this, `scrollHeight`'s viewport-height floor keeps the full 1440x1000
   // canvas and the page background paints a halo around the content.
@@ -1861,6 +1884,127 @@ function measurePageContentExtentInPage(): PageContentExtent | null {
       ? { l: bodyRect.left, t: bodyRect.top, r: bodyRect.right, b: bodyRect.bottom }
       : null;
   return { scrollW, scrollH, union, body: bodyBox, backdropPaintsDesign };
+}
+
+// A long page's centered content column, measured inside the page at scroll 0.
+// Full-width pinned chrome (sticky/fixed toolbars) is excluded — it stretches
+// to any viewport, so it says nothing about how wide the content really is.
+export interface PageColumnExtent {
+  l: number;
+  r: number;
+  viewportW: number;
+  viewportH: number;
+  scrollH: number;
+  // body's own horizontal padding/margin/border: page-level gutters that must
+  // survive a narrowed re-layout or fixed-size content overflows horizontally.
+  bodyPadX: number;
+}
+
+const LAYOUT_NARROW_MIN_GAIN = 64;
+
+/**
+ * Decides whether a LONG page export may re-lay out at its content-column
+ * width instead of the requested viewport width. Author-capped centered
+ * columns (`max-width` + `margin:auto`) otherwise export with the page
+ * background as wide flanks on both sides. Conservative by design: pages that
+ * fit one viewport stay on the content-box crop path, full-bleed content
+ * keeps the requested width, and a narrowed layout that turns out to overflow
+ * horizontally must be reverted by the caller.
+ */
+export function resolvePageLayoutWidth(
+  column: PageColumnExtent | null | undefined,
+  requestedWidth: number,
+): number | null {
+  if (!column) return null;
+  // Single-viewport pages are handled by resolvePageCaptureCrop; narrowing
+  // them can push body padding into horizontal overflow and defeat that crop.
+  if (column.scrollH <= column.viewportH + CONTENT_CROP_EPS) return null;
+  const colW = Math.ceil(column.r) - Math.floor(column.l) + Math.ceil(Math.max(0, column.bodyPadX || 0));
+  if (!Number.isFinite(colW) || colW < 320) return null;
+  if (colW >= requestedWidth - LAYOUT_NARROW_MIN_GAIN) return null;
+  return colW;
+}
+
+// Serialized into the page: measures the content column for
+// resolvePageLayoutWidth. Recursive walk so a skipped pinned toolbar skips its
+// whole subtree (its children span the full bar, not the content column).
+function measurePageColumnInPage(): PageColumnExtent | null {
+  const doc = document.documentElement;
+  const body = document.body;
+  if (!doc || !body) return null;
+  const viewportW = window.innerWidth || doc.clientWidth;
+  const viewportH = window.innerHeight || doc.clientHeight;
+  const scrollH = Math.ceil(Math.max(doc.scrollHeight, body.scrollHeight));
+  let l = Infinity;
+  let r = -Infinity;
+  let visited = 0;
+  let overflow = false;
+  const replacedTags: Record<string, 1> = { IMG: 1, VIDEO: 1, CANVAS: 1, SVG: 1, IFRAME: 1, EMBED: 1, OBJECT: 1, PICTURE: 1 };
+  function paintsNothing(cs: CSSStyleDeclaration): boolean {
+    const bg = cs.backgroundColor;
+    const noColor = !bg || bg === "transparent" || bg === "rgba(0, 0, 0, 0)";
+    return noColor && (!cs.backgroundImage || cs.backgroundImage === "none");
+  }
+  function walk(el: Element): void {
+    if (overflow) return;
+    if (++visited > 20000) {
+      overflow = true;
+      return;
+    }
+    const cs = getComputedStyle(el);
+    if (cs.display === "none" || cs.visibility === "hidden") return;
+    const rect = el.getBoundingClientRect();
+    // Full-width pinned chrome (sticky toolbar, fixed nav): skip the subtree.
+    if ((cs.position === "fixed" || cs.position === "sticky") && rect.width >= viewportW * 0.9) return;
+    // A full-width box only defines the column when it actually PAINTS at that
+    // width (background, or a replaced element like an image). Transparent
+    // full-width wrappers (layout containers, custom-element shells around a
+    // pinned bar) say nothing about the content column — only their children do.
+    const fullWidth = rect.width >= viewportW * 0.98;
+    const defines = !fullWidth || replacedTags[el.tagName] === 1 || !paintsNothing(cs);
+    if (defines && rect.width > 0 && rect.height > 0) {
+      l = Math.min(l, rect.left);
+      r = Math.max(r, rect.right);
+    }
+    for (let i = 0; i < el.children.length; i++) walk(el.children[i]);
+  }
+  for (let i = 0; i < body.children.length; i++) walk(body.children[i]);
+  if (overflow || !(r > l)) return null;
+  const bodyStyle = getComputedStyle(body);
+  const bodyPadX =
+    (parseFloat(bodyStyle.paddingLeft) || 0) +
+    (parseFloat(bodyStyle.paddingRight) || 0) +
+    (parseFloat(bodyStyle.marginLeft) || 0) +
+    (parseFloat(bodyStyle.marginRight) || 0) +
+    (parseFloat(bodyStyle.borderLeftWidth) || 0) +
+    (parseFloat(bodyStyle.borderRightWidth) || 0);
+  return { l, r, viewportW, viewportH, scrollH, bodyPadX };
+}
+
+export async function queryPageColumnExtent(window: BrowserWindow): Promise<PageColumnExtent | null> {
+  try {
+    const value = await window.webContents.executeJavaScript(
+      `(${measurePageColumnInPage.toString()})()`,
+      true,
+    );
+    return (value ?? null) as PageColumnExtent | null;
+  } catch {
+    return null;
+  }
+}
+
+// Real laid-out scroll width — used to detect horizontal overflow after a
+// narrowed re-layout (fixed-width content wider than the new viewport).
+export async function queryPageScrollWidth(window: BrowserWindow): Promise<number | null> {
+  try {
+    const value = await window.webContents.executeJavaScript(
+      "Math.ceil(Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0))",
+      true,
+    );
+    return typeof value === "number" && Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 // Shared with the CDP image-export path (pdf-export.ts), which crops via
