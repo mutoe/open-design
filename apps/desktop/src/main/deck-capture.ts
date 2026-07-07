@@ -321,8 +321,18 @@ export async function renderDeckSlides(
       // Page mode: capture the original, unmodified document. `paginate` (set by
       // the PDF path) splits a long page into one image per viewport.
       const pageJpeg = shouldCapturePageAsJpeg(input.pageImageFormat, input.paginate);
+      // Content-box cropping only applies when the caller left the render size
+      // to us — an explicit width/height is a request for that exact canvas.
+      const cropToContent = input.width == null && input.height == null;
       return finish(
-        await capturePage(window, pageJpeg, input.outputDir, input.paginate === true, requestedPage),
+        await capturePage(
+          window,
+          pageJpeg,
+          input.outputDir,
+          input.paginate === true,
+          requestedPage,
+          cropToContent,
+        ),
       );
     }
 
@@ -1526,6 +1536,7 @@ async function capturePage(
   outputDir: string | undefined,
   paginate = false,
   pageSize: Stage = { w: PAGE_W, h: PAGE_VIEW_H },
+  cropToContent = false,
 ): Promise<DesktopRenderSlidesResult> {
   // Lay the document out at a desktop width first so width-dependent content
   // (responsive layouts) renders the way a desktop visitor sees it.
@@ -1556,6 +1567,31 @@ async function capturePage(
     )) as number;
     const totalLogical = Math.max(pageSize.h, Number.isFinite(measured) ? measured : pageSize.h);
     return await paginatePageViewports(window, totalLogical, jpeg, outputDir, pageSize);
+  }
+
+  // Content occupying less than one viewport exports at its own size: without
+  // this, `scrollHeight`'s viewport-height floor keeps the full 1440x1000
+  // canvas and the page background paints a halo around the content.
+  // resolvePageCaptureCrop is conservative — scrolling pages, full-bleed
+  // backdrops, and viewport-filling content keep the capture below untouched.
+  if (cropToContent) {
+    const crop = resolvePageCaptureCrop(await queryPageContentExtent(window), pageSize);
+    if (crop) {
+      const image = await window.webContents.capturePage(crop);
+      const size = image.getSize();
+      // A zero-size frame means the compositor had nothing for the rect —
+      // fall through to the plain full-viewport path rather than emit nothing.
+      if (size.width >= 1 && size.height >= 1) {
+        const bytes = jpeg ? image.toJPEG(82) : image.toPNG();
+        return {
+          ok: true,
+          ...(await emitImages([{ buffer: bytes, jpeg }], outputDir)),
+          width: size.width,
+          height: size.height,
+          mode: "page",
+        };
+      }
+    }
   }
 
   // The window's device-pixel-ratio already scales the capture (2 on retina),
@@ -1699,6 +1735,146 @@ export function scrollStitchGeometry(
 // Device-pixel row offset for a chunk captured at logical scroll `actualY`.
 export function scrollStitchRowOffset(actualY: number, dpr: number): number {
   return Math.round(actualY * dpr);
+}
+
+// A page's painted content extent, measured inside the page at scroll 0.
+// Boxes are viewport-relative CSS px, which equal document coordinates because
+// preparePageForCapture leaves the page scrolled back to the top.
+export interface PageContentBox {
+  l: number;
+  t: number;
+  r: number;
+  b: number;
+}
+export interface PageContentExtent {
+  scrollW: number;
+  scrollH: number;
+  // Union of the border boxes of body's visible descendants.
+  union: PageContentBox | null;
+  // body's own border box.
+  body: PageContentBox | null;
+  // html or body carries a background-image (incl. gradients): the backdrop is
+  // authored design, so the surrounding area must never be cropped away.
+  backdropPaintsDesign: boolean;
+}
+
+// Two CSS px of slack before an axis counts as "fills the viewport".
+const CONTENT_CROP_EPS = 2;
+// A default body block-stretches to the viewport width minus the UA 8px margin,
+// so a body only slightly narrower than the viewport says nothing about the
+// author's intent. Only a body clearly narrower than the viewport is treated as
+// an authored design box whose own padding must survive the crop.
+const BODY_AUTHORED_WIDTH_SLACK = 64;
+
+/**
+ * Decides whether an ordinary-page capture may shrink to its measured content
+ * box. `scrollHeight` can never report less than the viewport height, so a page
+ * whose content occupies under one screen would otherwise export as the full
+ * off-screen viewport with the page background painted around the content (the
+ * "exported PNG has a background halo" bug). Deliberately conservative: pages
+ * that scroll, overflow horizontally, carry a full-bleed backdrop, or whose
+ * content reaches the viewport edges keep today's full capture.
+ */
+export function resolvePageCaptureCrop(
+  extent: PageContentExtent | null | undefined,
+  viewport: Stage,
+): { x: number; y: number; width: number; height: number } | null {
+  if (!extent || !extent.union) return null;
+  if (extent.backdropPaintsDesign) return null;
+  // Only the single-viewport case; a scrolling page keeps the stitch and a
+  // horizontally overflowing page keeps the viewport-width clip.
+  if (extent.scrollW > viewport.w + CONTENT_CROP_EPS) return null;
+  if (extent.scrollH > viewport.h + CONTENT_CROP_EPS) return null;
+  let { l, t, r, b } = extent.union;
+  const body = extent.body;
+  if (body) {
+    // Per axis: a body the author constrained on that axis defines the design's
+    // extent there (its padding is deliberate spacing), while a body that just
+    // stretches/fills the viewport must not veto the crop. Height uses the tight
+    // epsilon because a default body's height is content-driven (auto), never
+    // viewport-stretched — only explicit 100vh-style sizing reaches full height.
+    if (body.r - body.l < viewport.w - BODY_AUTHORED_WIDTH_SLACK) {
+      l = Math.min(l, body.l);
+      r = Math.max(r, body.r);
+    }
+    if (body.b - body.t < viewport.h - CONTENT_CROP_EPS) {
+      t = Math.min(t, body.t);
+      b = Math.max(b, body.b);
+    }
+  }
+  const x = Math.max(0, Math.floor(l));
+  const y = Math.max(0, Math.floor(t));
+  const width = Math.min(viewport.w, Math.ceil(r)) - x;
+  const height = Math.min(viewport.h, Math.ceil(b)) - y;
+  if (width < 1 || height < 1) return null;
+  // Content effectively covers the viewport — cropping would be a no-op.
+  if (width >= viewport.w - CONTENT_CROP_EPS && height >= viewport.h - CONTENT_CROP_EPS) return null;
+  return { x, y, width, height };
+}
+
+// Serialized into the page (like countRealSlides): measures the raw inputs for
+// resolvePageCaptureCrop. Kept dumb on purpose — every decision lives in the
+// unit-testable resolver. Shadow-DOM internals are not pierced; a host element's
+// own box stands in for its rendered content.
+function measurePageContentExtentInPage(): PageContentExtent | null {
+  const doc = document.documentElement;
+  const body = document.body;
+  if (!doc || !body) return null;
+  const scrollW = Math.ceil(Math.max(doc.scrollWidth, body.scrollWidth));
+  const scrollH = Math.ceil(Math.max(doc.scrollHeight, body.scrollHeight));
+  let backdropPaintsDesign = false;
+  for (const el of [doc, body]) {
+    const bg = getComputedStyle(el).backgroundImage;
+    if (bg && bg !== "none") backdropPaintsDesign = true;
+  }
+  const all = body.querySelectorAll("*");
+  // Pathologically large documents: skip measuring (no crop) rather than stall.
+  if (all.length > 20000) return null;
+  const skipTags: Record<string, 1> = {
+    SCRIPT: 1,
+    STYLE: 1,
+    LINK: 1,
+    META: 1,
+    TITLE: 1,
+    TEMPLATE: 1,
+    NOSCRIPT: 1,
+  };
+  let l = Infinity;
+  let t = Infinity;
+  let r = -Infinity;
+  let b = -Infinity;
+  for (let i = 0; i < all.length; i++) {
+    const el = all[i];
+    if (skipTags[el.tagName]) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (getComputedStyle(el).visibility === "hidden") continue;
+    l = Math.min(l, rect.left);
+    t = Math.min(t, rect.top);
+    r = Math.max(r, rect.right);
+    b = Math.max(b, rect.bottom);
+  }
+  const union = r > l && b > t ? { l, t, r, b } : null;
+  const bodyRect = body.getBoundingClientRect();
+  const bodyBox =
+    bodyRect.width > 0 && bodyRect.height > 0
+      ? { l: bodyRect.left, t: bodyRect.top, r: bodyRect.right, b: bodyRect.bottom }
+      : null;
+  return { scrollW, scrollH, union, body: bodyBox, backdropPaintsDesign };
+}
+
+// Shared with the CDP image-export path (pdf-export.ts), which crops via
+// Page.captureScreenshot's clip instead of a capturePage rect.
+export async function queryPageContentExtent(window: BrowserWindow): Promise<PageContentExtent | null> {
+  try {
+    const value = await window.webContents.executeJavaScript(
+      `(${measurePageContentExtentInPage.toString()})()`,
+      true,
+    );
+    return (value ?? null) as PageContentExtent | null;
+  } catch {
+    return null;
+  }
 }
 
 export type BgraColor = readonly [number, number, number, number];

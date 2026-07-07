@@ -9,6 +9,8 @@ import type {
 } from "@open-design/sidecar-proto";
 import { findRealElementRange, findRealTagEnd, findRealTagOffset, HTML_TAG_PATTERNS } from '@open-design/contracts/runtime/html-injection-points';
 
+import { queryPageContentExtent, resolvePageCaptureCrop } from "./deck-capture.js";
+
 export type PageSize = { height: number; width: number };
 
 export const DECK_PAGE_SIZE: PageSize = { width: 13.333333, height: 7.5 };
@@ -137,7 +139,9 @@ export async function exportImageFromHtml(input: DesktopExportImageInput): Promi
   }
 }
 
-async function captureBeyondViewportAsPng(window: BrowserWindow, width: number): Promise<Buffer> {
+// Exported so a harness/spec can drive the capture pipeline directly, without
+// exportImageFromHtml's native save dialog.
+export async function captureBeyondViewportAsPng(window: BrowserWindow, width: number): Promise<Buffer> {
   const dbg = window.webContents.debugger;
   if (!dbg.isAttached()) dbg.attach("1.3");
   try {
@@ -157,8 +161,17 @@ async function captureBeyondViewportAsPng(window: BrowserWindow, width: number):
     // emulated width, in case the new width triggered media queries
     // that loaded different assets.
     await waitForPrintableContent(window);
+    // Content occupying less than one viewport exports at its own size — the
+    // requested width/height come from the preview iframe's scroll size, whose
+    // floor is the preview pane, so a small artifact on a `min-height:100vh`
+    // backdrop would otherwise capture the whole dark viewport around it (the
+    // "exported PNG has a background halo" bug). Decisions live in the shared
+    // resolvePageCaptureCrop (see deck-capture.ts); the clip is in CSS px and
+    // the output scales by deviceScaleFactor automatically.
+    const clip = await resolveCdpContentClip(window);
     const result = (await dbg.sendCommand("Page.captureScreenshot", {
       captureBeyondViewport: true,
+      ...(clip ? { clip: { ...clip, scale: 1 } } : {}),
       format: "png",
       fromSurface: true,
       optimizeForSpeed: false,
@@ -172,6 +185,25 @@ async function captureBeyondViewportAsPng(window: BrowserWindow, width: number):
       await dbg.sendCommand("Emulation.setDefaultBackgroundColorOverride");
     } catch { /* ignore */ }
     if (dbg.isAttached()) dbg.detach();
+  }
+}
+
+// Measures the emulated viewport + content extent and asks the shared resolver
+// whether this capture may shrink to the content box. `100vh` resolves against
+// the emulated viewport, so the resolver's single-viewport rule (a scrolling
+// page is never cropped) holds for the CDP path exactly as for capturePage.
+async function resolveCdpContentClip(
+  window: BrowserWindow,
+): Promise<{ x: number; y: number; width: number; height: number } | null> {
+  try {
+    const viewport = (await window.webContents.executeJavaScript(
+      "({ w: window.innerWidth, h: window.innerHeight })",
+      true,
+    )) as { w: number; h: number };
+    if (!viewport || !(viewport.w > 0) || !(viewport.h > 0)) return null;
+    return resolvePageCaptureCrop(await queryPageContentExtent(window), viewport);
+  } catch {
+    return null;
   }
 }
 
