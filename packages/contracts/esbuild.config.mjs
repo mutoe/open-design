@@ -18,6 +18,7 @@ await build({
     "./src/runtime/preview-observability.ts",
     "./src/runtime/preview-guards.ts",
     "./src/runtime/html-injection-points.ts",
+    "./src/runtime/workspace-tab-shortcuts.ts",
     "./src/design-systems/components-manifest.ts",
     "./src/design-systems/derived-token-outputs.ts",
     "./src/design-systems/token-schema.ts",

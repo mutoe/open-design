@@ -58,6 +58,10 @@
       "types": "./dist/runtime/preview-guards.d.ts",
       "default": "./dist/runtime/preview-guards.mjs"
     },
+    "./runtime/workspace-tab-shortcuts": {
+      "types": "./dist/runtime/workspace-tab-shortcuts.d.ts",
+      "default": "./dist/runtime/workspace-tab-shortcuts.mjs"
+    },
     "./design-systems/components-manifest": {
       "types": "./dist/design-systems/components-manifest.d.ts",
       "default": "./dist/design-systems/components-manifest.mjs"

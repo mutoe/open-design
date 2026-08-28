@@ -1443,6 +1443,45 @@
   scrollbar-color: var(--border-strong) transparent;
 }
 
+/* Pinned project entry tabs (Design System + Design Files). They are the way
+   back to the file grid, so they must survive the strip scrolling once a
+   project has more open files than fit. Sticky rather than a sibling element
+   outside `.ws-tabs-bar` so the tabs stay one flex run, one tab order, and one
+   `role="tablist"` — screen readers still read them as tab 1..n. */
+.ws-tabs-pinned {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+  flex-shrink: 0;
+  height: 100%;
+  /* Opaque: scrolling tabs pass underneath and must not bleed through. */
+  background: var(--bg);
+}
+/* Trailing edge only while something is actually tucked under the zone, so a
+   short strip keeps its clean, undivided look. */
+.ws-tabs-pinned::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 16px;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--text) 18%, transparent),
+    transparent 70%
+  );
+  transition: opacity 140ms var(--ease-out);
+}
+.ws-tabs-bar.is-scrolled .ws-tabs-pinned::after {
+  opacity: 1;
+}
+
 /* Right-aligned project + file actions cluster in the Design Files tab row.
    The former standalone chrome header was removed; settings / handoff /
    avatar (rendered by ProjectView via the headerActions slot) and the

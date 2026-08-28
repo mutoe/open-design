@@ -17,8 +17,10 @@ import {
   DESIGN_FILES_TAB,
   FileWorkspace,
   settleManualEditFiles,
+  scrollWorkspaceTabIntoView,
   scrollWorkspaceTabsWithWheel,
   settleManualEditExit,
+  workspaceTabShortcutFromMessage,
 } from '../../src/components/FileWorkspace';
 import { ENABLE_BLANK_PAGE_WORKSPACE_ENTRYPOINT } from '../../src/components/workspace/tab-launcher';
 import { I18nProvider } from '../../src/i18n';
@@ -3397,6 +3399,87 @@ describe('applySplitChatPanelWidth', () => {
     expect(split.style.getPropertyValue('--project-chat-panel-width')).toBe('');
     expect(split.style.getPropertyValue('--project-chat-handle-width')).toBe('');
     expect(split.style.getPropertyValue('--project-workspace-panel-track')).toBe('');
+  });
+});
+
+describe('scrollWorkspaceTabIntoView', () => {
+  // The strip spans x = 100..500. The pinned zone (Design System + Design
+  // Files) occupies its first 120px, so only x = 220..500 is readable.
+  const PINNED_WIDTH = 120;
+
+  function makeTabBar(scrollLeft: number) {
+    return {
+      scrollLeft,
+      getBoundingClientRect: () => ({ left: 100, right: 500 }) as DOMRect,
+    } as unknown as HTMLDivElement;
+  }
+
+  function makeTab(left: number, right: number) {
+    return {
+      getBoundingClientRect: () => ({ left, right }) as DOMRect,
+    } as unknown as HTMLElement;
+  }
+
+  it('reveals a tab hidden underneath the pinned zone', () => {
+    const tabBar = makeTabBar(300);
+    // Overlaps the strip, but sits entirely behind the sticky pinned tabs —
+    // the user cannot see it, so it must still be scrolled out from under.
+    scrollWorkspaceTabIntoView(tabBar, makeTab(150, 210), PINNED_WIDTH);
+
+    expect(tabBar.scrollLeft).toBe(230);
+  });
+
+  it('leaves a tab already clear of the pinned zone alone', () => {
+    const tabBar = makeTabBar(300);
+
+    scrollWorkspaceTabIntoView(tabBar, makeTab(230, 320), PINNED_WIDTH);
+
+    expect(tabBar.scrollLeft).toBe(300);
+  });
+
+  it('still pulls a tab overflowing the right edge back into view', () => {
+    const tabBar = makeTabBar(300);
+
+    scrollWorkspaceTabIntoView(tabBar, makeTab(460, 560), PINNED_WIDTH);
+
+    expect(tabBar.scrollLeft).toBe(360);
+  });
+
+  it('treats the strip edge as the boundary when nothing is pinned', () => {
+    const tabBar = makeTabBar(300);
+
+    scrollWorkspaceTabIntoView(tabBar, makeTab(60, 140));
+
+    expect(tabBar.scrollLeft).toBe(260);
+  });
+});
+
+describe('workspaceTabShortcutFromMessage', () => {
+  it('accepts a relayed stroke and defaults its missing modifiers', () => {
+    expect(
+      workspaceTabShortcutFromMessage({
+        type: 'od:workspace-tab-shortcut',
+        key: 'w',
+        metaKey: true,
+      }),
+    ).toEqual({
+      key: 'w',
+      metaKey: true,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: false,
+    });
+  });
+
+  it.each([
+    ['a foreign message type', { type: 'od:open-file', key: 'w' }],
+    ['a missing key', { type: 'od:workspace-tab-shortcut' }],
+    ['an empty key', { type: 'od:workspace-tab-shortcut', key: '' }],
+    ['a non-string key', { type: 'od:workspace-tab-shortcut', key: 87 }],
+    ['a non-object payload', 'od:workspace-tab-shortcut'],
+    ['null', null],
+  ])('rejects %s', (_label, payload) => {
+    expect(workspaceTabShortcutFromMessage(payload)).toBeNull();
   });
 });
 

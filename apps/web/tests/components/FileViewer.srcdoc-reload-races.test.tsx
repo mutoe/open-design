@@ -704,6 +704,7 @@ describe('FileViewer srcDoc reload — prevSourceBeforeReloadRef race conditions
         'selection',
         'snapshot',
         'observability',
+        'tabs',
         'sandbox',
         'focus',
       ]);

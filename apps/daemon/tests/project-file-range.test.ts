@@ -1423,6 +1423,26 @@ describe('GET /api/projects/:id/raw/* range request route', () => {
     expect(html.indexOf('data-od-preview-redirect-guard')).toBeLessThan(authorScriptIndex);
   });
 
+  it('injects the workspace tab shortcut relay before authored scripts', async () => {
+    // The preview iframe is sandboxed without allow-same-origin, so the host
+    // cannot listen for keys inside it. Without this relay every workspace tab
+    // shortcut dies in the frame once the user clicks into the artifact.
+    const bridged = await fetch(`${rawUrl('guarded.html')}?odPreviewBridge=tabs`);
+    expect(bridged.status).toBe(200);
+    const html = await bridged.text();
+    const authorScriptIndex = html.indexOf('<script src="./boot.js">');
+    expect(authorScriptIndex).toBeGreaterThan(-1);
+    expect(html).toContain('data-od-workspace-tab-shortcuts');
+    expect(html).toContain('od:workspace-tab-shortcut');
+    expect(html.indexOf('data-od-workspace-tab-shortcuts')).toBeLessThan(authorScriptIndex);
+  });
+
+  it('leaves the tab shortcut relay out when the surface does not request it', async () => {
+    const plain = await fetch(`${rawUrl('guarded.html')}?odPreviewBridge=focus`);
+    expect(plain.status).toBe(200);
+    expect(await plain.text()).not.toContain('data-od-workspace-tab-shortcuts');
+  });
+
   it('preserves and serves complex nested external resources through a guarded URL preview', async () => {
     const response = await fetch(
       `${rawUrl('prototypes/booking/index.html')}?odPreviewBridge=scroll&odPreviewBridge=selection&odPreviewBridge=snapshot&odPreviewBridge=observability&odPreviewBridge=sandbox&odPreviewBridge=focus`,

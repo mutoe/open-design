@@ -55,6 +55,7 @@ import { navigate, registerNavigationGuard } from '../router';
 import { downloadDesignSystemArchive, downloadProjectArchive } from '../runtime/exports';
 import { finalizeBrandProject } from '../runtime/brands';
 import { deriveFileOps, type FileOpEntry } from '../runtime/file-ops';
+import { WORKSPACE_TAB_SHORTCUT_MESSAGE } from '@open-design/contracts/runtime/workspace-tab-shortcuts';
 import { parseDesignMd } from '../runtime/design-md-parse';
 import {
   deleteBrandImage,
@@ -1194,6 +1195,54 @@ function consumeFileWorkspaceTabShortcut(event: KeyboardEvent) {
   event.stopPropagation();
 }
 
+/** The only parts of a key stroke the workspace tab shortcut table reads. */
+export interface WorkspaceTabShortcutStroke {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+}
+
+/**
+ * Validate a relayed tab shortcut coming from a preview frame.
+ *
+ * The payload crosses a `postMessage` boundary, so nothing about its shape is
+ * guaranteed. Returning `null` for anything that is not a fully-formed stroke
+ * keeps the caller from having to trust the frame.
+ */
+export function workspaceTabShortcutFromMessage(
+  data: unknown,
+): WorkspaceTabShortcutStroke | null {
+  if (!data || typeof data !== 'object') return null;
+  const message = data as Record<string, unknown>;
+  if (message.type !== WORKSPACE_TAB_SHORTCUT_MESSAGE) return null;
+  if (typeof message.key !== 'string' || message.key.length === 0) return null;
+  return {
+    key: message.key,
+    metaKey: message.metaKey === true,
+    ctrlKey: message.ctrlKey === true,
+    altKey: message.altKey === true,
+    shiftKey: message.shiftKey === true,
+  };
+}
+
+/**
+ * True when `source` is a frame this document actually embeds.
+ *
+ * `window.postMessage` is reachable by any frame, including a third-party page
+ * a design happens to embed, so identity is checked against our own live
+ * `<iframe>` set rather than an origin string (preview frames are srcdoc, whose
+ * origin serializes to "null").
+ */
+function isPreviewFrameSource(source: MessageEventSource | null): boolean {
+  if (!source) return false;
+  if (typeof document === 'undefined') return false;
+  return Array.from(document.querySelectorAll('iframe')).some(
+    (frame) => frame.contentWindow === source,
+  );
+}
+
 type DesignSystemSectionActivityPhase =
   | 'idle'
   | 'planned'
@@ -1505,6 +1554,11 @@ export function FileWorkspace({
   const launcherBtnRef = useRef<HTMLButtonElement | null>(null);
   const projectShareRef = useRef<HTMLDivElement | null>(null);
   const tabsBarRef = useRef<HTMLDivElement | null>(null);
+  // Sticky zone holding the Design System / Design Files entry tabs. Its width
+  // is the strip's left inset: a tab scrolled underneath it is invisible even
+  // though its rect still overlaps the strip, so keepActiveTabVisible() has to
+  // subtract it (see scrollWorkspaceTabIntoView's `leadingInset`).
+  const pinnedTabsRef = useRef<HTMLDivElement | null>(null);
   // Focus-mode dock host for the workspace tab strip (workspaceTabsDock.ts).
   const focusTabsDockRef = useWorkspaceTabsDockRef();
   const draggedTabNameRef = useRef<string | null>(null);
@@ -2438,70 +2492,120 @@ export function FileWorkspace({
   // Browser-style tab bar: when the active tab changes (open from a chat
   // file chip, switch via Cmd+P, etc.), scroll it into view so the user
   // can always see what they have selected even when the strip overflows.
-  useEffect(() => {
+  const keepActiveTabVisible = useCallback(() => {
     const tabBar = tabsBarRef.current;
     if (!tabBar) return;
     const el = tabBar.querySelector<HTMLElement>('.ws-tab.active');
     if (!el) return;
-    scrollWorkspaceTabIntoView(tabBar, el);
-  }, [activeTab]);
+    const pinned = pinnedTabsRef.current;
+    // An active tab that IS one of the pinned entry tabs is always on screen —
+    // scrolling "to" it would only yank the strip back to 0 and hide whatever
+    // the user was looking at.
+    if (pinned?.contains(el)) return;
+    scrollWorkspaceTabIntoView(tabBar, el, pinned?.getBoundingClientRect().width ?? 0);
+  }, []);
+
+  // Browser-style tab bar: keep the selected tab on screen. Re-centring on
+  // `activeTab` alone was not enough — the strip is `flex: 0 1 auto` and its
+  // width moves underneath a stable selection (chat column collapse/expand,
+  // window resize, and the `.ws-tabs-file-actions` cluster un-hiding the
+  // moment a viewer file opens). Any of those can push the active tab out of
+  // view without the id ever changing, which is what left the user hunting
+  // for their current tab. The ResizeObserver below covers those; this effect
+  // covers selection changes and tab open/close.
+  useEffect(() => {
+    keepActiveTabVisible();
+  }, [activeTab, keepActiveTabVisible, persistedTabs]);
 
   // Browser-style shortcuts for the high-frequency Design Files workspace
   // tabs. Capture phase prevents the host browser/Electron shell from opening
   // or closing its own top-level tab before the workspace handles the command.
   useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.isComposing) return;
-      const key = e.key;
+    // Runs the tab command a key stroke maps to. Split out from the listener
+    // because the same table has to serve two sources: real key events on the
+    // host document, and strokes relayed by postMessage from a preview iframe
+    // (see the `od:workspace-tab-shortcut` handler below). `consume` is what
+    // differs — a relayed stroke has no host event to preventDefault.
+    const runTabShortcut = (
+      stroke: WorkspaceTabShortcutStroke,
+      consume: () => void,
+    ): boolean => {
+      const key = stroke.key;
       const lowerKey = key.toLowerCase();
-      const primaryModifier = (e.metaKey || e.ctrlKey) && !e.altKey;
-      const ctrlWithoutPlatformModifiers = e.ctrlKey && !e.metaKey && !e.altKey;
-      const commandOption = e.metaKey && e.altKey && !e.ctrlKey;
+      const primaryModifier = (stroke.metaKey || stroke.ctrlKey) && !stroke.altKey;
+      const ctrlWithoutPlatformModifiers =
+        stroke.ctrlKey && !stroke.metaKey && !stroke.altKey;
+      const commandOption = stroke.metaKey && stroke.altKey && !stroke.ctrlKey;
 
-      if (primaryModifier && !e.shiftKey && lowerKey === 't') {
-        consumeFileWorkspaceTabShortcut(e);
+      if (primaryModifier && !stroke.shiftKey && lowerKey === 't') {
+        consume();
         openWorkspaceTabLauncher();
-        return;
+        return true;
       }
 
-      if (primaryModifier && !e.shiftKey && lowerKey === 'w') {
-        consumeFileWorkspaceTabShortcut(e);
+      if (primaryModifier && !stroke.shiftKey && lowerKey === 'w') {
+        consume();
         closeActiveWorkspaceTab();
-        return;
+        return true;
       }
 
       if (ctrlWithoutPlatformModifiers && key === 'Tab') {
-        consumeFileWorkspaceTabShortcut(e);
-        activateWorkspaceTabByOffset(e.shiftKey ? -1 : 1);
-        return;
+        consume();
+        activateWorkspaceTabByOffset(stroke.shiftKey ? -1 : 1);
+        return true;
       }
 
       if (
-        (ctrlWithoutPlatformModifiers && !e.shiftKey && key === 'PageDown')
-        || (commandOption && !e.shiftKey && key === 'ArrowRight')
+        (ctrlWithoutPlatformModifiers && !stroke.shiftKey && key === 'PageDown')
+        || (commandOption && !stroke.shiftKey && key === 'ArrowRight')
       ) {
-        consumeFileWorkspaceTabShortcut(e);
+        consume();
         activateWorkspaceTabByOffset(1);
-        return;
+        return true;
       }
 
       if (
-        (ctrlWithoutPlatformModifiers && !e.shiftKey && key === 'PageUp')
-        || (commandOption && !e.shiftKey && key === 'ArrowLeft')
+        (ctrlWithoutPlatformModifiers && !stroke.shiftKey && key === 'PageUp')
+        || (commandOption && !stroke.shiftKey && key === 'ArrowLeft')
       ) {
-        consumeFileWorkspaceTabShortcut(e);
+        consume();
         activateWorkspaceTabByOffset(-1);
-        return;
+        return true;
       }
 
-      if (primaryModifier && !e.shiftKey && /^[1-9]$/u.test(key)) {
-        consumeFileWorkspaceTabShortcut(e);
+      if (primaryModifier && !stroke.shiftKey && /^[1-9]$/u.test(key)) {
+        consume();
         const index = key === '9' ? workspaceTabIds.length - 1 : Number(key) - 1;
         activateWorkspaceTabByIndex(index);
+        return true;
       }
+
+      return false;
     };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
+      runTabShortcut(e, () => consumeFileWorkspaceTabShortcut(e));
+    };
+
+    // Keyboard events never cross a frame boundary, so once the user clicks
+    // into a design preview every tab shortcut silently dies inside the
+    // iframe. The preview bridge relays the strokes it does not want back up
+    // here (srcdoc.ts), which is what makes Cmd+W keep working after you have
+    // interacted with the artifact.
+    const onMessage = (event: MessageEvent) => {
+      const stroke = workspaceTabShortcutFromMessage(event.data);
+      if (!stroke) return;
+      if (!isPreviewFrameSource(event.source)) return;
+      runTabShortcut(stroke, () => {});
+    };
+
     window.addEventListener('keydown', onKeyDown, { capture: true });
-    return () => window.removeEventListener('keydown', onKeyDown, { capture: true });
+    window.addEventListener('message', onMessage);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, { capture: true });
+      window.removeEventListener('message', onMessage);
+    };
   });
 
   // Cmd+P (mac) / Ctrl+P (win/linux) opens the file palette. Capture phase
@@ -3741,6 +3845,11 @@ export function FileWorkspace({
     const measure = () => {
       frame = 0;
       setTabsOverflowing(tabBar.scrollWidth > tabBar.clientWidth + 1);
+      // Every width change that can hide the selection lands here: the strip
+      // shrinking, a tab's label resolving, the file-actions cluster claiming
+      // space. Re-centre in the same frame so the active tab never silently
+      // drifts off screen.
+      keepActiveTabVisible();
     };
     const requestMeasure = () => {
       if (frame) window.cancelAnimationFrame(frame);
@@ -3759,7 +3868,20 @@ export function FileWorkspace({
       resizeObserver?.disconnect();
       window.removeEventListener('resize', requestMeasure);
     };
-  }, [browserTabs.length, designSystemProject, tabNames.length]);
+  }, [browserTabs.length, designSystemProject, keepActiveTabVisible, tabNames.length]);
+
+  // Drives the pinned zone's trailing edge: it only earns a divider/shadow
+  // once tabs are actually sliding underneath it.
+  useEffect(() => {
+    const tabBar = tabsBarRef.current;
+    if (!tabBar) return;
+    const sync = () => {
+      tabBar.classList.toggle('is-scrolled', tabBar.scrollLeft > 0);
+    };
+    sync();
+    tabBar.addEventListener('scroll', sync, { passive: true });
+    return () => tabBar.removeEventListener('scroll', sync);
+  }, []);
 
   useEffect(() => {
     if (!projectShareMenuOpen) return;
@@ -3953,43 +4075,52 @@ export function FileWorkspace({
             clearTabDragState();
           }}
         >
-          {!initialMaterializationPending && designSystemProject ? (
+          {/* Project-level entry tabs (Design System + Design Files) live in a
+              sticky zone so they stay reachable once the file tabs overflow
+              and the strip scrolls — a project with 15+ open files used to
+              scroll its own "back to the file grid" affordance out of sight.
+              Grouping them in one wrapper (rather than making each tab sticky)
+              keeps the left offsets from having to be measured: the wrapper
+              pins at `left: 0` and the tabs inside stay in normal flow. */}
+          <div className="ws-tabs-pinned" ref={pinnedTabsRef}>
+            {!initialMaterializationPending && designSystemProject ? (
+              <button
+                type="button"
+                className={`ws-tab design-system-tab ${activeTab === DESIGN_SYSTEM_TAB ? 'active' : ''}`}
+                role="tab"
+                aria-selected={activeTab === DESIGN_SYSTEM_TAB}
+                tabIndex={0}
+                data-testid="design-system-project-tab"
+                onClick={() => setPersistedActive(DESIGN_SYSTEM_TAB)}
+                title={t('dsManager.tabDesignSystem')}
+              >
+                <span className="tab-icon" aria-hidden>
+                  <Icon name="blocks" size={13} />
+                </span>
+                <span className="ws-tab-label">{t('dsManager.tabDesignSystem')}</span>
+              </button>
+            ) : null}
             <button
               type="button"
-              className={`ws-tab design-system-tab ${activeTab === DESIGN_SYSTEM_TAB ? 'active' : ''}`}
+              className={`ws-tab design-files-tab ${initialMaterializationPending || designFilesTabActive ? 'active' : ''}`}
               role="tab"
-              aria-selected={activeTab === DESIGN_SYSTEM_TAB}
+              aria-selected={initialMaterializationPending || designFilesTabActive}
+              aria-label={designFilesTabTitle}
               tabIndex={0}
-              data-testid="design-system-project-tab"
-              onClick={() => setPersistedActive(DESIGN_SYSTEM_TAB)}
-              title={t('dsManager.tabDesignSystem')}
+              data-testid="design-files-tab"
+              onClick={() => setPersistedActive(DESIGN_FILES_TAB)}
+              title={designFilesTabTitle}
             >
               <span className="tab-icon" aria-hidden>
-                <Icon name="blocks" size={13} />
+                {fileSyncBadge ? (
+                  <FileSyncBadge state={fileSyncBadge} size={14} />
+                ) : (
+                  <Icon name="grid" size={14} />
+                )}
               </span>
-              <span className="ws-tab-label">{t('dsManager.tabDesignSystem')}</span>
+              <span className="ws-tab-label">{designFilesTabLabel}</span>
             </button>
-          ) : null}
-          <button
-            type="button"
-            className={`ws-tab design-files-tab ${initialMaterializationPending || designFilesTabActive ? 'active' : ''}`}
-            role="tab"
-            aria-selected={initialMaterializationPending || designFilesTabActive}
-            aria-label={designFilesTabTitle}
-            tabIndex={0}
-            data-testid="design-files-tab"
-            onClick={() => setPersistedActive(DESIGN_FILES_TAB)}
-            title={designFilesTabTitle}
-          >
-            <span className="tab-icon" aria-hidden>
-              {fileSyncBadge ? (
-                <FileSyncBadge state={fileSyncBadge} size={14} />
-              ) : (
-                <Icon name="grid" size={14} />
-              )}
-            </span>
-            <span className="ws-tab-label">{designFilesTabLabel}</span>
-          </button>
+          </div>
           {!initialMaterializationPending ? visibleOrderedWorkspaceTabs.map((entry) => {
             if (entry.kind === 'browser') {
               const browserTab = entry.browserTab;
@@ -8488,14 +8619,26 @@ function arraysEqual(left: string[], right: string[]): boolean {
   return left.every((value, index) => value === right[index]);
 }
 
+/**
+ * Bring `tab` fully inside the strip's *visually* readable band.
+ *
+ * `leadingInset` is the width of the sticky pinned zone (Design System +
+ * Design Files). Those tabs never scroll away, so the strip's left edge and
+ * the first pixel a scrolling tab can occupy without being covered are not the
+ * same coordinate. Without the inset a tab parked underneath the pinned zone
+ * measures as "in view" and the user is left hunting for a tab that is right
+ * there but hidden — the exact symptom this function exists to prevent.
+ */
 export function scrollWorkspaceTabIntoView(
   tabBar: Pick<HTMLDivElement, 'getBoundingClientRect' | 'scrollLeft'>,
   tab: Pick<HTMLElement, 'getBoundingClientRect'>,
+  leadingInset = 0,
 ) {
   const tabRect = tab.getBoundingClientRect();
   const barRect = tabBar.getBoundingClientRect();
-  if (tabRect.left < barRect.left) {
-    tabBar.scrollLeft += tabRect.left - barRect.left;
+  const readableLeft = barRect.left + Math.max(0, leadingInset);
+  if (tabRect.left < readableLeft) {
+    tabBar.scrollLeft += tabRect.left - readableLeft;
   } else if (tabRect.right > barRect.right) {
     tabBar.scrollLeft += tabRect.right - barRect.right;
   }

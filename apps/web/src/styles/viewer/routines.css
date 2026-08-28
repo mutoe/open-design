@@ -2876,6 +2876,28 @@
 .app .ws-tab.drag-over-after + .ws-tab::before {
   opacity: 0;
 }
+/* The pinned zone is a wrapper, so the first file tab after it lost its
+   `.ws-tab + .ws-tab` adjacency. Restore the separator (and the same
+   fade-next-to-a-pill rule) so the strip still reads as one continuous run. */
+.app .ws-tabs-pinned {
+  gap: 6px;
+}
+.app .ws-tabs-pinned + .ws-tab::before {
+  content: '';
+  position: absolute;
+  left: -3.5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 14px;
+  background: var(--border);
+  pointer-events: none;
+  transition: opacity 120ms var(--ease-out);
+}
+.app .ws-tabs-pinned:has(.ws-tab.active) + .ws-tab::before,
+.app .ws-tabs-pinned:has(.ws-tab:hover) + .ws-tab::before {
+  opacity: 0;
+}
 .app .ws-tab .tab-icon,
 .app .ws-tab.active .tab-icon {
   color: var(--accent);

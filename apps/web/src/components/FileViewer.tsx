@@ -387,7 +387,13 @@ const POWERED_PREVIEW_SANDBOX =
   'allow-scripts allow-same-origin allow-downloads allow-popups allow-forms allow-modals allow-pointer-lock';
 const POWERED_PREVIEW_ALLOW =
   'accelerometer; autoplay; camera; cross-origin-isolated; fullscreen; gamepad; gyroscope; microphone; xr-spatial-tracking';
-const BASE_PREVIEW_BRIDGE_QUERY = 'odPreviewBridge=scroll&odPreviewBridge=selection&odPreviewBridge=snapshot&odPreviewBridge=observability';
+// `tabs` relays the workspace tab shortcuts back to the host. The preview
+// iframe is sandboxed without allow-same-origin, so the host cannot reach into
+// it to listen for keys: unless the daemon injects this relay, Cmd/Ctrl+W stops
+// closing the tab the moment the user clicks into the artifact. Unconditional
+// like the other base bridges — every URL-loaded preview lives inside the tab
+// strip it drives.
+const BASE_PREVIEW_BRIDGE_QUERY = 'odPreviewBridge=scroll&odPreviewBridge=selection&odPreviewBridge=snapshot&odPreviewBridge=observability&odPreviewBridge=tabs';
 // Generic runtime UI state carried across the URL-load -> srcDoc transport
 // switch. This preserves the current page of multi-page prototypes while
 // leaving artifact scripts and business state inside their sandboxed frames.
@@ -10826,6 +10832,10 @@ function HtmlViewer({
           paletteBridge: false,
           previewFocusGuard: true,
           previewObservability: true,
+          // Interacting with the preview moves focus into the frame; without
+          // this relay the workspace tab shortcuts stop responding until the
+          // user clicks back out to the host chrome.
+          hostTabShortcuts: true,
           deferFontStylesheets: true,
           // Embed the reload counter so the srcdoc string differs across reloads
           // even when the fetched HTML bytes are identical (issue #4650).

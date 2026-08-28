@@ -26,6 +26,7 @@ import {
   buildPreviewBaseHrefBridge,
   buildPreviewObservabilityBridge,
 } from '@open-design/contracts/runtime/preview-observability';
+import { buildWorkspaceTabShortcutBridge } from '@open-design/contracts/runtime/workspace-tab-shortcuts';
 import {
   PREVIEW_REDIRECT_GUARD_MAX_HOPS,
   PREVIEW_REDIRECT_GUARD_SELF_REFRESH_MIN_DELAY_MS,
@@ -70,6 +71,11 @@ export type SrcdocOptions = {
   paletteBridge?: boolean;
   initialPalette?: string | null;
   previewFocusGuard?: boolean;
+  /** Forward host workspace tab shortcuts (Cmd/Ctrl+W, Cmd+T, Ctrl+Tab,
+   * Cmd+1..9) that are pressed while this frame has focus back up to the host.
+   * Only the interactive in-tab preview wants this: an export, thumbnail, or
+   * presenter document has no workspace tab strip to drive. */
+  hostTabShortcuts?: boolean;
   /** Install the live-preview error and white-screen reporting bridge. Keep
    * this disabled for exports, captures, thumbnails, and historical previews. */
   previewObservability?: boolean;
@@ -375,7 +381,12 @@ export function buildSrcdoc(
   const withObservability = options.previewObservability
     ? injectAfterHeadOpen(withRedirectGuard, buildPreviewObservabilityBridge())
     : withRedirectGuard;
-  const withKeydownRegistry = options.deck ? injectDeckKeydownRegistryHook(withObservability) : withObservability;
+  // Injected before the deck keydown registry so the relay's own capture-phase
+  // listener is not mistaken for artifact keyboard navigation.
+  const withTabShortcuts = options.hostTabShortcuts
+    ? injectAfterHeadOpen(withObservability, buildWorkspaceTabShortcutBridge())
+    : withObservability;
+  const withKeydownRegistry = options.deck ? injectDeckKeydownRegistryHook(withTabShortcuts) : withTabShortcuts;
   const withFocusGuard = options.previewFocusGuard
     ? injectPreviewFocusGuard(withKeydownRegistry)
     : withKeydownRegistry;

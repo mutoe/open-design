@@ -16,6 +16,7 @@ import {
   PREVIEW_URL_GUARD_MAX_HTML_BYTES,
   previewHtmlHasLoadTimeLocationNavigation,
 } from '@open-design/contracts/runtime/preview-guards';
+import { buildWorkspaceTabShortcutBridge } from '@open-design/contracts/runtime/workspace-tab-shortcuts';
 import {
   endOfTag,
   findRealElementRange,
@@ -1451,6 +1452,10 @@ function wantsUrlPreviewRedirectGuard(value: unknown): boolean {
   return previewBridgeTokens(value).some((token) => token === 'redirect');
 }
 
+function wantsUrlPreviewTabShortcutBridge(value: unknown): boolean {
+  return previewBridgeTokens(value).some((token) => token === 'tabs');
+}
+
 function injectBeforeBodyClose(html: string, marker: string, injection: string): string {
   if (html.includes(marker)) return html;
   const bodyCloseIndex = findRealTagOffset(html, /<\/body(?=[\t\n\f\r >])/i);
@@ -1493,10 +1498,17 @@ function injectAfterHeadOpen(html: string, marker: string, injection: string): s
 
 function injectUrlPreviewBridge(
   html: string,
-  bridge: 'scroll' | 'selection' | 'snapshot' | 'observability' | 'sandbox' | 'focus' | 'redirect',
+  bridge: 'scroll' | 'selection' | 'snapshot' | 'observability' | 'sandbox' | 'focus' | 'redirect' | 'tabs',
 ): string {
   if (bridge === 'sandbox') {
     return injectAfterHeadOpen(html, 'data-od-sandbox-shim', buildPreviewSandboxShim());
+  }
+  if (bridge === 'tabs') {
+    return injectAfterHeadOpen(
+      html,
+      'data-od-workspace-tab-shortcuts',
+      buildWorkspaceTabShortcutBridge(),
+    );
   }
   if (bridge === 'focus') {
     return injectAfterHeadOpen(html, 'data-od-preview-focus-guard', buildPreviewFocusGuard());
@@ -1539,7 +1551,8 @@ function applyUrlPreviewBridgesToHtml(
       wantsUrlPreviewObservabilityBridge(requestedBridge) ||
       wantsUrlPreviewSandboxGuard(requestedBridge) ||
       wantsUrlPreviewFocusGuard(requestedBridge) ||
-      wantsUrlPreviewRedirectGuard(requestedBridge)
+      wantsUrlPreviewRedirectGuard(requestedBridge) ||
+      wantsUrlPreviewTabShortcutBridge(requestedBridge)
     ) ||
     !/^text\/html(?:;|$)/i.test(mime)
   ) {
@@ -1554,6 +1567,12 @@ function applyUrlPreviewBridgesToHtml(
   // Guards must run before authored scripts. injectAfterHeadOpen prepends at
   // the start of <head>; apply in reverse runtime order so the final document
   // executes sandbox -> redirect -> observability -> focus.
+  // Relays host tab shortcuts (Cmd/Ctrl+W and friends) that would otherwise
+  // be swallowed by this frame once the user clicks into the artifact. Placed
+  // with the guards because it must beat authored keydown handlers.
+  if (wantsUrlPreviewTabShortcutBridge(requestedBridge)) {
+    html = injectUrlPreviewBridge(html, 'tabs');
+  }
   if (wantsUrlPreviewFocusGuard(requestedBridge)) {
     html = injectUrlPreviewBridge(html, 'focus');
   }
