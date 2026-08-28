@@ -3389,6 +3389,10 @@ function manualEditPatchKindToTracking(patch: ManualEditPatch): TrackingArtifact
     case 'set-style': return 'style';
     case 'set-attributes': return 'attributes';
     case 'set-outer-html': return 'html';
+    // Inner-HTML patches land on the same analytics bucket as outer-HTML: both
+    // are structural HTML mutations, and the tracking enum deliberately does
+    // not distinguish the two.
+    case 'set-inner-html': return 'html';
     case 'set-full-source': return 'source';
   }
 }
@@ -17785,18 +17789,6 @@ function HtmlViewer({
           role="dialog"
           aria-label={t('fileViewer.present')}
         >
-          {/* When the global tab-bar slot is available the exit control is
-              portaled there (out of the content area); the in-overlay button
-              is only a fallback for when the slot can't be found. */}
-          {presentExitSlot ? null : (
-            <button
-              className="present-exit"
-              onClick={() => setInTabPresent(false)}
-              aria-label={t('fileViewer.exitPresentation')}
-            >
-              <Icon name="close" size={13} /> {t('fileViewer.exitPresentation')}
-            </button>
-          )}
           {effectiveDeck || !useUrlLoadPreview ? (
             <iframe
               title="present"
@@ -17843,7 +17835,11 @@ function HtmlViewer({
         <button
           type="button"
           className="workspace-tabs-present-exit"
-          onClick={() => setInTabPresent(false)}
+          // Must be the full teardown, not a bare `setInTabPresent(false)`:
+          // leaving the presenter popup open and the stage in fullscreen is
+          // exactly half of OPEND-2156. Every exit affordance goes through
+          // the same door as Esc and presenter-close.
+          onClick={() => closeInTabPresentation()}
           aria-label={t('fileViewer.exitPresentation')}
         >
           <Icon name="close" size={13} /> {t('fileViewer.exitPresentation')}
